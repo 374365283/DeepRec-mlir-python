@@ -17,7 +17,7 @@ limitations under the License.
 
 namespace tensorflow {
 
-const char* kProtobufInt64Typename = "::tensorflow::protobuf_int64";
-const char* kProtobufUint64Typename = "::tensorflow::protobuf_uint64";
+//const char* kProtobufInt64Typename = "::tensorflow::protobuf_int64";
+//const char* kProtobufUint64Typename = "::tensorflow::protobuf_uint64";
 
 }  // namespace tensorflow

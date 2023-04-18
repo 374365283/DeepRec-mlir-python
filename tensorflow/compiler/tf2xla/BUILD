@@ -11,7 +11,8 @@ load("//tensorflow/compiler/xla:xla.bzl", "xla_py_proto_library")
 load("//tensorflow:tensorflow.bzl", "tf_portable_proto_library")
 
 package(
-    default_visibility = [":internal"],
+    #default_visibility = [":internal"],
+    default_visibility = ["//visibility:public"],
     licenses = ["notice"],  # Apache 2.0
 )
 
@@ -24,6 +25,7 @@ package_group(
         "//tensorflow/compiler/tf2xla/...",
         "//tensorflow/contrib/compiler/...",
         "//tensorflow/python/compiler/...",
+        "//tensorflow/compiler/mlir/...",
     ],
 )
 
@@ -482,7 +484,7 @@ cc_library(
         "functionalize_control_flow_util.h",
     ],
     deps = [
-        "//tensorflow/compiler/tf2xla/ops:xla_ops",
+        #"//tensorflow/compiler/tf2xla/ops:xla_ops",
         "//tensorflow/compiler/xla:status_macros",
         "//tensorflow/core:core_cpu",
         "//tensorflow/core:core_cpu_internal",
@@ -503,7 +505,7 @@ cc_library(
     deps = [
         ":functionalize_control_flow_util",
         ":tf2xla_util",
-        "//tensorflow/compiler/tf2xla/ops:xla_ops",
+        #"//tensorflow/compiler/tf2xla/ops:xla_ops",
         "//tensorflow/compiler/xla:status_macros",
         "//tensorflow/compiler/xla:union_find",
         "//tensorflow/core:core_cpu",
@@ -530,7 +532,7 @@ cc_library(
         ":functionalize_control_flow_util",
         ":functionalize_while",
         ":tf2xla_util",
-        "//tensorflow/compiler/tf2xla/ops:xla_ops",
+        #"//tensorflow/compiler/tf2xla/ops:xla_ops",
         "//tensorflow/compiler/xla:status_macros",
         "//tensorflow/compiler/xla:union_find",
         "//tensorflow/core:core_cpu",
@@ -553,7 +555,7 @@ cc_library(
     ],
     deps = [
         "//tensorflow/compiler/tf2xla:tf2xla_util",
-        "//tensorflow/compiler/tf2xla/ops:xla_ops",
+        #"//tensorflow/compiler/tf2xla/ops:xla_ops",
         "//tensorflow/compiler/xla:status_macros",
         "//tensorflow/core:core_cpu",
         "//tensorflow/core:core_cpu_internal",
@@ -589,7 +591,7 @@ cc_library(
         ":functionalize_cond",
         ":functionalize_control_flow_util",
         ":tf2xla_util",
-        "//tensorflow/compiler/tf2xla/ops:xla_ops",
+        #"//tensorflow/compiler/tf2xla/ops:xla_ops",
         "//tensorflow/compiler/xla:status_macros",
         "//tensorflow/compiler/xla:union_find",
         "//tensorflow/core:core_cpu",
@@ -684,7 +686,7 @@ cc_library(
     hdrs = ["resource_operation_table.h"],
     deps = [
         "//tensorflow/core:lib",
-        "//tensorflow/core:ops",
+        #"//tensorflow/core:ops",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/strings",

@@ -758,14 +758,14 @@ Status Exporter::ConvertLibFunction(const GraphExportConfig& configs,
   if (auto attr = function.getAttrOfType<mlir::UnitAttr>(stateful_string)) {
     func_def.mutable_signature()->set_is_stateful(true);
   }
-  for (int64 i = 0; i < function.getNumArguments(); ++i) {
+  /*for (int64 i = 0; i < function.getNumArguments(); ++i) {
     if (auto resource_arg_unique_id_attr =
             function.getArgAttrOfType<mlir::IntegerAttr>(
                 i, "tf.resource_arg_unique_id")) {
       (*func_def.mutable_resource_arg_unique_id())[i] =
           resource_arg_unique_id_attr.getInt();
     }
-  }
+  }*/
 
   // Ignore the gradient and is_stateful attribute on the function as they have
   // been handled above.
