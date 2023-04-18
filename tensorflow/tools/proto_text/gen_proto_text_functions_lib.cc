@@ -231,7 +231,8 @@ string GetCppClass(const FieldDescriptor& d) {
   // platforms. The following line, which is manipulated during internal-
   // external sync'ing, takes care of the variability.
   if (cpp_class == "int64") {
-    cpp_class = kProtobufInt64Typename;
+    //cpp_class = kProtobufInt64Typename;
+    cpp_class = "::tensorflow::protobuf_int64";
   }
 
   return cpp_class;

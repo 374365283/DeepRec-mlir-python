@@ -19,6 +19,8 @@ limitations under the License.
 #include "mlir/IR/Operation.h"  // TF:llvm-project
 #include "mlir/Pass/Pass.h"  // TF:llvm-project
 #include "mlir/Pass/PassRegistry.h"  // TF:llvm-project
+#include "mlir/Pass/PassManager.h"  // TF:llvm-project
+#include "mlir/Transforms/Passes.h"  // TF:llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_executor.h"
 
 #define DEBUG_TYPE "tf-functional-to-executor"
@@ -100,8 +102,18 @@ CreateFunctionalToExecutorDialectConversionPass() {
   return std::make_unique<FunctionalToExecutorDialectConversion>();
 }
 
-}  // namespace mlir
-
-static mlir::PassRegistration<mlir::FunctionalToExecutorDialectConversion> pass(
+static PassRegistration<mlir::FunctionalToExecutorDialectConversion> pass(
     "tf-functional-to-executor-conversion",
     "Transform from func op to TF executor dialect.");
+
+void CreateFunctionalToExecutorPipeline(OpPassManager &pm) {
+    OpPassManager &func_pm = pm.nest<FuncOp>();
+    func_pm.addPass(CreateFunctionalToExecutorDialectConversionPass());
+}
+
+static PassPipelineRegistration<> pipeline(
+    "tf-functional-to-executor-conversion-pipeline",
+    "convert tf dialect to tf executor dialect.",
+    CreateFunctionalToExecutorPipeline);
+
+}  // namespace mlir

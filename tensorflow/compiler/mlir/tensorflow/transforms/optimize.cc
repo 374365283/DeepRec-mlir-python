@@ -54,7 +54,7 @@ void CreateTFStandardPipeline(OpPassManager &pm,
   // - remove dead islands.
   // - fuse islands as much as possible.
   // - materialize the eventual "pass-through" ops by inlining their content.
-  func_pm.addPass(tf_executor::CreateSwitchFoldPass());
+  //func_pm.addPass(tf_executor::CreateSwitchFoldPass());
   func_pm.addPass(tf_executor::CreateTFExecutorGraphPruningPass());
   func_pm.addPass(tf_executor::CreateTFExecutorIslandCoarseningPass());
   func_pm.addPass(CreateMaterializePassthroughOpPass());

@@ -100,8 +100,10 @@ Status GetUnregisteredAttrs(
   TF_ASSIGN_OR_RETURN(auto op_name,
                       GetTensorFlowOpName(inst->getName().getStringRef()));
 
-  const tensorflow::OpRegistrationData* op_reg_data =
-      tensorflow::OpRegistry::Global()->LookUp(std::string(op_name));
+  //const tensorflow::OpRegistrationData* op_reg_data =
+  //    tensorflow::OpRegistry::Global()->LookUp(std::string(op_name));
+  const tensorflow::OpRegistrationData* op_reg_data = nullptr;
+  tensorflow::OpRegistry::Global()->LookUp(std::string(op_name), &op_reg_data);
   if (!op_reg_data) {
     // This is likely a function call node, so we should continue.
     return Status::OK();
