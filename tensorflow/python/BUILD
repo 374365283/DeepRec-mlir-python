@@ -4855,12 +4855,20 @@ tf_python_pybind_extension(
 pybind_extension(
     name = "_tf_stack",
     srcs = ["util/tf_stack.cc"],
-    copts = ["-fexceptions"],
+    hdrs = [
+         "//tensorflow/compiler/mlir/python:pywrap_mlir_hdrs",
+       ],
+    copts = [
+              "-fexceptions",
+              "-fno-strict-aliasing",
+            ],
     features = ["-use_header_modules"],
     # TODO(b/138203821): change to "util._tf_stack" once the bug is fixed.
     module_name = "_tf_stack",
     deps = [
+        "//tensorflow/compiler/mlir/python:mlir",
         "//third_party/python_runtime:headers",  # buildcleaner: keep
+        "@com_google_absl//absl/strings",
         "@pybind11",
     ],
 )
@@ -5293,6 +5301,7 @@ tf_py_wrap_cc(
         "//tensorflow/core/profiler/internal:python_scoped_annotation",
         "//tensorflow/tools/graph_transforms:transform_graph_lib",
         "//tensorflow/python/eager:pywrap_tfe_lib",
+        "//tensorflow/compiler/mlir/python:mlir",
     ] + (tf_additional_lib_deps() +
          tf_additional_plugin_deps() +
          tf_additional_verbs_deps() +

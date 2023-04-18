@@ -15,143 +15,102 @@ limitations under the License.
 
 #include <string>
 
+#include "tensorflow/compiler/mlir/python/mlir.h"
+
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Parser.h"  // TF:llvm-project
 #include "mlir/Pass/PassManager.h"  // TF:llvm-project
 #include "mlir/Pass/PassRegistry.h"  // TF:llvm-project
-#include "tensorflow/c/tf_status.h"
-#include "tensorflow/c/tf_status_helper.h"
-#include "tensorflow/compiler/mlir/tensorflow/translate/import_model.h"
-#include "tensorflow/compiler/mlir/tensorflow/utils/error_util.h"
+#include "mlir/Pass/Pass.h" // TF:llvm-project
+#include "tensorflow/stream_executor/lib/statusor.h"
+#include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/import_utils.h"
+#include "tensorflow/compiler/mlir/tensorflow/translate/import_model.h"
+#include "tensorflow/compiler/mlir/tensorflow/translate/export_graphdef.h"
+#include "tensorflow/compiler/mlir/tensorflow/translate/mlir_roundtrip_flags.h"
+#include "absl/strings/str_split.h"
 
 namespace tensorflow {
 
-std::string ImportGraphDef(const std::string &proto,
-                           const std::string &pass_pipeline,
-                           TF_Status *status) {
-  GraphDef graphdef;
-  auto s = tensorflow::LoadProtoFromBuffer(proto, &graphdef);
-  if (!s.ok()) {
-    Set_TF_Status_from_Status(status, s);
+std::string ImportGraphDef(const std::string& proto, const std::string& pass_pipeline,
+                           absl::string_view input_names, absl::string_view input_data_types,
+                           absl::string_view input_data_shapes, absl::string_view output_names) {
+  /*
+  GraphImportConfig specs;
+  auto parse_input_status = ParseInputArrayInfo(input_names, input_data_types, input_data_shapes,
+                               &specs.inputs);
+  if (!parse_input_status.ok()) {
     return "// error";
   }
-  GraphDebugInfo debug_info;
-  GraphImportConfig specs;
-  mlir::MLIRContext context;
-  auto module = ConvertGraphdefToMlir(graphdef, debug_info, specs, &context);
-  if (!module.ok()) {
-    Set_TF_Status_from_Status(status, module.status());
+  if (!output_names.empty()) {
+    specs.outputs = absl::StrSplit(output_names, ',');
+  }
+  
+  // Convert txt to graphdef.
+  GraphDef graphdef;
+  auto load_proto_status = tensorflow::LoadProtoFromBuffer(proto, &graphdef);
+  if (!load_proto_status.ok()) {
     return "// error";
   }
 
-  // Run the pass_pipeline on the module if not empty.
+  // Convert graphdef to tf executor dialect.
+  GraphDebugInfo debug_info;
+  mlir::MLIRContext context;
+  auto module = ConvertGraphdefToMlir(graphdef, debug_info, specs, &context);
+  if (!module.ok()) {
+    return "// error";
+  }
+
+  // Convert tf executor dialect to tf dialect.
   if (!pass_pipeline.empty()) {
     mlir::PassManager pm(&context);
     std::string error;
     llvm::raw_string_ostream error_stream(error);
     if (failed(mlir::parsePassPipeline(pass_pipeline, pm, error_stream))) {
-      TF_SetStatus(status, TF_INVALID_ARGUMENT,
-                   ("Invalid pass_pipeline: " + error_stream.str()).c_str());
       return "// error";
     }
 
-    mlir::StatusScopedDiagnosticHandler statusHandler(&context);
-    if (failed(pm.run(*module.ValueOrDie()))) {
-      Set_TF_Status_from_Status(status, statusHandler.ConsumeStatus());
+    if (mlir::failed(pm.run(*module.ValueOrDie()))) {
       return "// error";
     }
   }
   return MlirModuleToString(*module.ConsumeValueOrDie());
+  */
+  GraphImportConfig specs;
+  std::string output = proto + pass_pipeline;
+  return output;
 }
 
-std::string ExperimentalConvertSavedModelToMlir(
-    const std::string &saved_model_path, const std::string &exported_names_str,
-    bool show_debug_info, TF_Status *status) {
-  // Load the saved model into a SavedModelV2Bundle.
-
-  tensorflow::SavedModelV2Bundle bundle;
-  auto load_status =
-      tensorflow::SavedModelV2Bundle::Load(saved_model_path, &bundle);
-  if (!load_status.ok()) {
-    Set_TF_Status_from_Status(status, load_status);
-    return "// error";
-  }
-
-  // Convert the SavedModelV2Bundle to an MLIR module.
-
-  std::vector<string> exported_names =
-      absl::StrSplit(exported_names_str, ',', absl::SkipEmpty());
-  mlir::MLIRContext context;
-  auto module_or = ConvertSavedModelToMlir(
-      &bundle, &context, absl::Span<std::string>(exported_names));
-  if (!module_or.status().ok()) {
-    Set_TF_Status_from_Status(status, module_or.status());
-    return "// error";
-  }
-
-  return MlirModuleToString(*module_or.ConsumeValueOrDie(), show_debug_info);
-}
-
-std::string ExperimentalConvertSavedModelV1ToMlir(
-    const std::string &saved_model_path, const std::string &tags,
-    bool show_debug_info, TF_Status *status) {
-  // Load the saved model into a SavedModelBundle.
-
-  std::unordered_set<string> tag_set =
-      absl::StrSplit(tags, ',', absl::SkipEmpty());
-
-  tensorflow::SavedModelBundle bundle;
-  auto load_status =
-      tensorflow::LoadSavedModel({}, {}, saved_model_path, tag_set, &bundle);
-  if (!load_status.ok()) {
-    Set_TF_Status_from_Status(status, load_status);
-    return "// error";
-  }
-
-  // Convert the SavedModelBundle to an MLIR module.
-
-  mlir::MLIRContext context;
-  auto module_or = ConvertSavedModelV1ToMlir(bundle, &context);
-  if (!module_or.status().ok()) {
-    Set_TF_Status_from_Status(status, module_or.status());
-    return "// error";
-  }
-
-  return MlirModuleToString(*module_or.ConsumeValueOrDie(), show_debug_info);
-}
-
-std::string ExperimentalRunPassPipeline(const std::string &mlir_txt,
-                                        const std::string &pass_pipeline,
-                                        bool show_debug_info,
-                                        TF_Status *status) {
+std::string ExportGraphDef(const std::string& mlir_txt, const std::string& pass_pipeline) {
+  /*
+  // Convert tf dialect txt to tf dialect module.
   mlir::MLIRContext context;
   mlir::OwningModuleRef module;
-  {
-    mlir::StatusScopedDiagnosticHandler diagnostic_handler(&context);
-    module = mlir::parseSourceString(mlir_txt, &context);
-    if (!module) {
-      Set_TF_Status_from_Status(status, diagnostic_handler.ConsumeStatus());
+  module = mlir::parseSourceString(mlir_txt, &context);
+  if (!module) {
+      return "// error";
+  }
+
+  // Convert tf dialect to tf exector dialect.
+  if (!pass_pipeline.empty()) {
+    mlir::PassManager pm(&context);
+    std::string error;
+    llvm::raw_string_ostream error_stream(error);
+    if (failed(mlir::parsePassPipeline(pass_pipeline, pm, error_stream))) {
+      return "// error";
+    }
+    if (mlir::failed(pm.run(*module))) {
       return "// error";
     }
   }
-
-  // Run the pass_pipeline on the module.
-  mlir::PassManager pm(&context);
-  std::string error;
-  llvm::raw_string_ostream error_stream(error);
-  if (failed(mlir::parsePassPipeline(pass_pipeline, pm, error_stream))) {
-    TF_SetStatus(status, TF_INVALID_ARGUMENT,
-                 ("Invalid pass_pipeline: " + error_stream.str()).c_str());
-    return "// error";
-  }
-
-  mlir::StatusScopedDiagnosticHandler diagnostic_handler(&context);
-  if (failed(pm.run(*module))) {
-    Set_TF_Status_from_Status(status, diagnostic_handler.ConsumeStatus());
-    return "// error";
-  }
-  return MlirModuleToString(*module, show_debug_info);
+  
+  // Convert tf executor dialect to graphdef.
+  GraphExportConfig specs;
+  StatusOr<std::unique_ptr<tensorflow::GraphDef>> graphdef(ConvertMlirToGraphdef(*module, specs));
+  return graphdef.ValueOrDie()->DebugString();
+  */
+  std::string output = mlir_txt + pass_pipeline;
+  return output;
 }
 
 }  // namespace tensorflow

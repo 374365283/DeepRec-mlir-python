@@ -76,14 +76,14 @@ void CreateTFStandardPipeline(OpPassManager& pm,
                               const StandardPipelineOptions& options);
 
 // Propagates device attributes of resources from callers to callees.
-std::unique_ptr<OpPassBase<ModuleOp>> CreateResourceDeviceInferencePass();
+//std::unique_ptr<OpPassBase<ModuleOp>> CreateResourceDeviceInferencePass();
 
 // Creates a pass that promotes resource reads/writes in the main function to
 // inputs and outputs of the main function, assuming that resource operations
 // have already been decomposed and function calls have already been inlined.
 // The pass also annotates the input arguments for resources with the indices
 // of their aliasing output arguments.
-std::unique_ptr<OpPassBase<ModuleOp>> CreatePromoteResourcesToArgsPass();
+//std::unique_ptr<OpPassBase<ModuleOp>> CreatePromoteResourcesToArgsPass();
 
 // Marks function visibility using tf.entry_function specification. That is,
 // functions with tf.entry_function attributes are marked with public
@@ -101,7 +101,7 @@ std::unique_ptr<OpPassBase<FuncOp>> CreateSimpleTFDeviceAssignmentPass(
 
 // Performs resource lifting on the function body to hoist resource variable
 // accesses outside all control flow statements.
-LogicalResult ResourceLiftingForFunctionalControlFlow(FuncOp function);
+//LogicalResult ResourceLiftingForFunctionalControlFlow(FuncOp function);
 
 // Converts stack ops into operations on local variables, which can later be
 // removed by resource lifting. Requires known maximum sizes of stacks and
@@ -120,26 +120,26 @@ namespace tf_executor {
 class GraphOp;
 
 // Returns a pass that folds switch nodes with constant predicates.
-std::unique_ptr<OpPassBase<FuncOp>> CreateSwitchFoldPass();
+//std::unique_ptr<OpPassBase<FuncOp>> CreateSwitchFoldPass();
 
 // Creates a pass to merge IslandOps from TFExecutor dialect.
 std::unique_ptr<OpPassBase<FuncOp>> CreateTFExecutorIslandCoarseningPass();
 
 // Creates a pass to merge IslandOps for operation marked for execution on TPU.
 // This is a V1 backward compatibility.
-std::unique_ptr<OpPassBase<ModuleOp>>
-CreateTFExecutorTPUV1IslandCoarseningPass();
+//std::unique_ptr<OpPassBase<ModuleOp>>
+//CreateTFExecutorTPUV1IslandCoarseningPass();
 
 // Creates a pass to outlining TPU clusters from single IslandOp into a nested
 // module suitable for being processed as-if it was a V2 module.
 // This is a V1 backward compatibility.
-std::unique_ptr<OpPassBase<ModuleOp>>
-CreateTFExecutorTPUV1IslandOutliningPass();
+//std::unique_ptr<OpPassBase<ModuleOp>>
+//CreateTFExecutorTPUV1IslandOutliningPass();
 
 // Creates a pass to inline calls to the nested TPU module, this reverses the
 // effect of the `TFExecutorTPUV1IslandOutlining` pass above.
 // This is a V1 backward compatibility.
-std::unique_ptr<OpPassBase<ModuleOp>> CreateTFExecutorTPUV1IslandInliningPass();
+//std::unique_ptr<OpPassBase<ModuleOp>> CreateTFExecutorTPUV1IslandInliningPass();
 
 // Creates a pass to prune tf_executor.graph from dead nodes.
 std::unique_ptr<OpPassBase<FuncOp>> CreateTFExecutorGraphPruningPass();
@@ -172,7 +172,7 @@ std::unique_ptr<OpPassBase<FuncOp>> CreateDecomposeResourceOpsPass();
 // variable load operations are all before device computation while resource
 // variable store operations are all after device computation. After this pass,
 // device computation no longer interacts with external resource variables.
-std::unique_ptr<OpPassBase<ModuleOp>> CreateResourceOpLiftingPass();
+//std::unique_ptr<OpPassBase<ModuleOp>> CreateResourceOpLiftingPass();
 
 // Lifts resource operations from tf_device.launch_func ops nested in `op`
 // outside. Returns a failure if there are remaining resource-type values that
@@ -192,7 +192,7 @@ std::unique_ptr<OpPassBase<FuncOp>> CreateParallelExecuteToIslandsPass();
 
 // Creates a pass that annotates whether a LaunchFuncOp's parameters have the
 // same data across replicas.
-std::unique_ptr<OpPassBase<ModuleOp>> CreateAnnotateParameterReplicationPass();
+//std::unique_ptr<OpPassBase<ModuleOp>> CreateAnnotateParameterReplicationPass();
 
 // Creates a pass that hoists a `tf_device.launch` body and assigns a `device`
 // attribute to each TensorFlow dialect op in the body based on the `device`
@@ -203,39 +203,39 @@ std::unique_ptr<OpPassBase<FuncOp>> CreateLaunchToDeviceAttributePass();
 namespace TFTPU {
 // Creates a pass that forms clusters from operations of the same
 // `_tpu_replicate` attribute.
-std::unique_ptr<OpPassBase<FuncOp>> CreateTPUClusterFormationPass();
+//std::unique_ptr<OpPassBase<FuncOp>> CreateTPUClusterFormationPass();
 
 // Creates a pass that allows TPU program inputs to have layouts determined at
 // run time.
-std::unique_ptr<OpPassBase<FuncOp>> CreateTPUDynamicLayoutPass();
+//std::unique_ptr<OpPassBase<FuncOp>> CreateTPUDynamicLayoutPass();
 
 // Creates a pass that remaps and assigns padding map from a
 // `tf_device.launch_func` `padding_map` attribute to its encapsulated function.
-std::unique_ptr<OpPassBase<ModuleOp>> CreateTPUDynamicPaddingMapperPass();
+//std::unique_ptr<OpPassBase<ModuleOp>> CreateTPUDynamicPaddingMapperPass();
 
 // Creates a pass that rewrites `tf_device.launch_func` on TPUs into TPU runtime
 // ops.
-std::unique_ptr<OpPassBase<ModuleOp>> CreateTPURewritePass();
+//std::unique_ptr<OpPassBase<ModuleOp>> CreateTPURewritePass();
 
 // Creates a pass that identifies XLASharding ops in launch op for TPU
 // computation.
-std::unique_ptr<OpPassBase<ModuleOp>> CreateTPUShardingIdentificationPass();
+//std::unique_ptr<OpPassBase<ModuleOp>> CreateTPUShardingIdentificationPass();
 
 // Creates a pass that merges device variable reads/updates into the surrounded
 // TPUExecute node. This allows the execute node to perform in-place variable
 // updates.
-std::unique_ptr<OpPassBase<FuncOp>> CreateTPUMergeVariablesWithExecutePass();
+//std::unique_ptr<OpPassBase<FuncOp>> CreateTPUMergeVariablesWithExecutePass();
 
 // Creates a pass that adds ops which perform formatting on variables at
 // run-time according to compilation result.
-std::unique_ptr<OpPassBase<ModuleOp>> CreateTPUVariableReformattingPass();
+//std::unique_ptr<OpPassBase<ModuleOp>> CreateTPUVariableReformattingPass();
 
 // Populates the supplied passmanager with the passes required to run the
-void CreateTPUBridgePipeline(OpPassManager& pm);
+//void CreateTPUBridgePipeline(OpPassManager& pm);
 
 // Populates the supplied passmanager with the passes required to run the
 // bridge in V1 mode.
-void CreateTPUBridgePipelineV1(OpPassManager& pm);
+//void CreateTPUBridgePipelineV1(OpPassManager& pm);
 
 }  // namespace TFTPU
 

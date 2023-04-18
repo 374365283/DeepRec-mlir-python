@@ -340,8 +340,10 @@ bool OpIsKnownToHaveNoSideEffect(Operation* op) {
   // Drop the `tf.` prefix to query TF registry.
   auto node_name =
       op_name.drop_front(TensorFlowDialect::getDialectNamespace().size() + 1);
-  const tensorflow::OpRegistrationData* op_reg_data =
-      tensorflow::OpRegistry::Global()->LookUp(node_name.data());
+  //const tensorflow::OpRegistrationData* op_reg_data =
+  //    tensorflow::OpRegistry::Global()->LookUp(node_name.data());
+  const tensorflow::OpRegistrationData* op_reg_data = nullptr;
+  tensorflow::OpRegistry::Global()->LookUp(node_name.data(), &op_reg_data);
   return op_reg_data && !op_reg_data->op_def.is_stateful();
 }
 

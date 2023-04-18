@@ -16,7 +16,7 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/utils/translate_utils.h"
 
 #include "mlir/IR/OpDefinition.h"  // TF:llvm-project
-#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/lib/core/errors.h"
 
 namespace tensorflow {
 

@@ -22,6 +22,8 @@ limitations under the License.
 #include "include/pybind11/pybind11.h"
 #include "include/pybind11/stl_bind.h"
 
+#include "tensorflow/compiler/mlir/python/mlir.h"
+
 struct StackFrame;  // Forward declaration.
 
 PYBIND11_MAKE_OPAQUE(std::vector<StackFrame>);
@@ -121,6 +123,28 @@ PYBIND11_MODULE(_tf_stack, m) {
     return ExtractStack(limit.is_none() ? -1 : py::cast<ssize_t>(limit),
                         mappers, filters);
   });
+
+  m.def("string_concat", [](const std::string &input1, const std::string &input2) {
+            std::string output = input1 + input2;
+            return output;
+    });
+
+  m.def("import_graphdef",
+        [](const std::string &graphdef, const std::string &pass_pipeline,
+           const std::string &input_names, const std::string &input_data_types,
+           const std::string &input_data_shapes, const std::string &output_names) {
+          std::string output = ImportGraphDef(
+              graphdef, pass_pipeline, input_names, input_data_types, 
+              input_data_shapes, output_names);
+          return output;
+        });
+    
+   m.def("export_graphdef",
+        [](const std::string &mlir_txt, const std::string &pass_pipeline) {
+          std::string output = ExportGraphDef(
+              mlir_txt, pass_pipeline);
+          return output;
+        });
 }
 
 }  // namespace tensorflow
