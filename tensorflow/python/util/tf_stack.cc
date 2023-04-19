@@ -22,11 +22,7 @@ limitations under the License.
 #include "include/pybind11/pybind11.h"
 #include "include/pybind11/stl_bind.h"
 
-<<<<<<< HEAD
 #include "tensorflow/compiler/mlir/python/mlir.h"
-=======
-//#include "tensorflow/compiler/mlir/python/mlir.h"
->>>>>>> 2f565d4f3a4b1572fc887e0604998a52e42ce8e7
 
 struct StackFrame;  // Forward declaration.
 
@@ -133,19 +129,11 @@ PYBIND11_MODULE(_tf_stack, m) {
             return output;
     });
 
-<<<<<<< HEAD
   m.def("import_graphdef",
         [](const std::string &graphdef, const std::string &pass_pipeline,
            const std::string &input_names, const std::string &input_data_types,
            const std::string &input_data_shapes, const std::string &output_names) {
           std::string output = ImportGraphDef(
-=======
-  /*m.def("import_graphdef",
-        [](const std::string &graphdef, const std::string &pass_pipeline,
-           const std::string &input_names, const std::string &input_data_types,
-           const std::string &input_data_shapes, const std::string &output_names) {
-          std::string output = tensorflow::ImportGraphDef(
->>>>>>> 2f565d4f3a4b1572fc887e0604998a52e42ce8e7
               graphdef, pass_pipeline, input_names, input_data_types, 
               input_data_shapes, output_names);
           return output;
@@ -153,18 +141,10 @@ PYBIND11_MODULE(_tf_stack, m) {
     
    m.def("export_graphdef",
         [](const std::string &mlir_txt, const std::string &pass_pipeline) {
-<<<<<<< HEAD
           std::string output = ExportGraphDef(
               mlir_txt, pass_pipeline);
           return output;
         });
-=======
-          std::string output = tensorflow::ExportGraphDef(
-              mlir_txt, pass_pipeline);
-          return output;
-        });
-  */
->>>>>>> 2f565d4f3a4b1572fc887e0604998a52e42ce8e7
 }
 
 }  // namespace tensorflow
