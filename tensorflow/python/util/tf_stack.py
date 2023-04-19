@@ -201,7 +201,11 @@ def convert_stack(stack, include_func_start_lineno=False):
 def string_concat(input1, input2):
   return _tf_stack.string_concat(input1.encode('utf-8'), input2.encode('utf-8'))
 
+<<<<<<< HEAD
 def import_graphdef(graphdef, pass_pipeline,
+=======
+'''def import_graphdef(graphdef, pass_pipeline,
+>>>>>>> 2f565d4f3a4b1572fc887e0604998a52e42ce8e7
                     input_names, input_data_types,
                     input_data_shapes, output_names):
   return _tf_stack.import_graphdef(
@@ -213,3 +217,7 @@ def import_graphdef(graphdef, pass_pipeline,
 
 def export_graphdef(mlir_txt, pass_pipeline):
   return _tf_stack.export_graphdef(str(mlir_txt).encode('utf-8'), pass_pipeline.encode('utf-8'))
+<<<<<<< HEAD
+=======
+'''
+>>>>>>> 2f565d4f3a4b1572fc887e0604998a52e42ce8e7
