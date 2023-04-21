@@ -77,6 +77,9 @@ std::string ImportGraphDef(const std::string& proto, const std::string& pass_pip
   return MlirModuleToString(*module.ConsumeValueOrDie());
   */
 
+  //TensorShapeProto shape;
+  //shape.add_dim()->set_size(2);
+  GraphDef graphdef;
   std::string output = proto + pass_pipeline;
   return output;
 }
