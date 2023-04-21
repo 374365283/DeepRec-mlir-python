@@ -28,6 +28,8 @@ limitations under the License.
 #include "tensorflow/core/protobuf/graph_debug_info.pb.h"
 #include "tensorflow/stream_executor/lib/statusor.h"
 
+#include "absl/strings/string_view.h"
+
 namespace tensorflow {
 
 // Given a GraphDef, returns a MLIR module containing the graph, expressed with

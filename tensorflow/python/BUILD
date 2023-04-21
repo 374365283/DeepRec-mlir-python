@@ -4857,7 +4857,7 @@ pybind_extension(
     srcs = ["util/tf_stack.cc"],
     hdrs = [
          "//tensorflow/compiler/mlir/python:pywrap_mlir_hdrs",
-       ],
+    ],
     copts = [
               "-fexceptions",
               "-fno-strict-aliasing",
