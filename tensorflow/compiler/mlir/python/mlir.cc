@@ -76,7 +76,7 @@ std::string ImportGraphDef(const std::string& proto, const std::string& pass_pip
   }
   return MlirModuleToString(*module.ConsumeValueOrDie());
   */
-  GraphImportConfig specs;
+  GraphDef graph;
   std::string output = proto + pass_pipeline;
   return output;
 }
