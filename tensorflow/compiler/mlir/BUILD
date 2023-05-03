@@ -101,6 +101,14 @@ cc_library(
 )
 
 tf_cc_binary(
+    name = "tf-test",
+    srcs = ["tf_test_main.cc"],
+    deps = [
+        "//tensorflow/core:protos_all_cc",
+    ],
+)
+
+tf_cc_binary(
     name = "tf-opt",
     deps = [
         ":tf_mlir_opt_main",

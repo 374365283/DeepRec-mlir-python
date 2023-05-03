@@ -4845,9 +4845,14 @@ py_library(
 tf_python_pybind_extension(
     name = "_pywrap_tensor_float_32_execution",
     srcs = ["util/tensor_float_32.cc"],
-    hdrs = ["//tensorflow/core/platform:tensor_float_32_hdr"],
+    hdrs = [
+             "//tensorflow/core/platform:tensor_float_32_hdr",
+             "//tensorflow/compiler/mlir/python:pywrap_mlir_hdrs",
+           ],
     module_name = "_pywrap_tensor_float_32_execution",
     deps = [
+        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/compiler/mlir/python:mlir",
         "@pybind11",
     ]
 )
@@ -4855,9 +4860,6 @@ tf_python_pybind_extension(
 pybind_extension(
     name = "_tf_stack",
     srcs = ["util/tf_stack.cc"],
-    hdrs = [
-         "//tensorflow/compiler/mlir/python:pywrap_mlir_hdrs",
-    ],
     copts = [
               "-fexceptions",
               "-fno-strict-aliasing",
@@ -4866,7 +4868,6 @@ pybind_extension(
     # TODO(b/138203821): change to "util._tf_stack" once the bug is fixed.
     module_name = "_tf_stack",
     deps = [
-        "//tensorflow/compiler/mlir/python:mlir",
         "//third_party/python_runtime:headers",  # buildcleaner: keep
         "@com_google_absl//absl/strings",
         "@pybind11",

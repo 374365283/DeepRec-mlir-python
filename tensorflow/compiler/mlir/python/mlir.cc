@@ -35,7 +35,7 @@ namespace tensorflow {
 std::string ImportGraphDef(const std::string& proto, const std::string& pass_pipeline,
                            absl::string_view input_names, absl::string_view input_data_types,
                            absl::string_view input_data_shapes, absl::string_view output_names) {
-  /*
+
   GraphImportConfig specs;
   auto parse_input_status = ParseInputArrayInfo(input_names, input_data_types, input_data_shapes,
                                &specs.inputs);
@@ -75,14 +75,9 @@ std::string ImportGraphDef(const std::string& proto, const std::string& pass_pip
     }
   }
   return MlirModuleToString(*module.ConsumeValueOrDie());
-  */
-  GraphDef graph;
-  std::string output = proto + pass_pipeline;
-  return output;
 }
 
 std::string ExportGraphDef(const std::string& mlir_txt, const std::string& pass_pipeline) {
-  /*
   // Convert tf dialect txt to tf dialect module.
   mlir::MLIRContext context;
   mlir::OwningModuleRef module;
@@ -108,9 +103,9 @@ std::string ExportGraphDef(const std::string& mlir_txt, const std::string& pass_
   GraphExportConfig specs;
   StatusOr<std::unique_ptr<tensorflow::GraphDef>> graphdef(ConvertMlirToGraphdef(*module, specs));
   return graphdef.ValueOrDie()->DebugString();
-  */
-  std::string output = mlir_txt + pass_pipeline;
-  return output;
+  
+  //std::string output = mlir_txt + pass_pipeline;
+  //return output;
 }
 
 }  // namespace tensorflow
