@@ -4860,16 +4860,12 @@ tf_python_pybind_extension(
 pybind_extension(
     name = "_tf_stack",
     srcs = ["util/tf_stack.cc"],
-    copts = [
-              "-fexceptions",
-              "-fno-strict-aliasing",
-            ],
+    copts = ["-fexceptions"],
     features = ["-use_header_modules"],
     # TODO(b/138203821): change to "util._tf_stack" once the bug is fixed.
     module_name = "_tf_stack",
     deps = [
         "//third_party/python_runtime:headers",  # buildcleaner: keep
-        "@com_google_absl//absl/strings",
         "@pybind11",
     ],
 )

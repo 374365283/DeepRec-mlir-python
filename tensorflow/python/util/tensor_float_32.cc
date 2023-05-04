@@ -43,5 +43,5 @@ PYBIND11_MODULE(_pywrap_tensor_float_32_execution, m) {
           std::string output = tensorflow::ExportGraphDef(
               mlir_txt, pass_pipeline);
           return output;
-        });
+        }); 
 }

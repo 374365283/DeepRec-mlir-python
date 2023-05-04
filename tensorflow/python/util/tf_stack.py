@@ -197,19 +197,3 @@ def convert_stack(stack, include_func_start_lineno=False):
         yield (filename, lineno, frame.name, line)
 
   return tuple(_tuple_generator())
-
-def string_concat(input1, input2):
-  return _tf_stack.string_concat(input1.encode('utf-8'), input2.encode('utf-8'))
-
-def import_graphdef(graphdef, pass_pipeline,
-                    input_names, input_data_types,
-                    input_data_shapes, output_names):
-  return _tf_stack.import_graphdef(
-        str(graphdef).encode('utf-8'), pass_pipeline.encode('utf-8'),
-        ','.join(input_names).encode('utf-8'),
-        ','.join(input_data_types).encode('utf-8'),
-        ':'.join(input_data_shapes).encode('utf-8'),
-        ','.join(output_names).encode('utf-8'))
-
-def export_graphdef(mlir_txt, pass_pipeline):
-  return _tf_stack.export_graphdef(str(mlir_txt).encode('utf-8'), pass_pipeline.encode('utf-8'))

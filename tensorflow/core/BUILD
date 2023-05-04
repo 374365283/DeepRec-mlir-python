@@ -3548,8 +3548,7 @@ tf_cuda_library(
         "//tensorflow/core/grappler/clusters:virtual_cluster",
         "//tensorflow/core/grappler/optimizers:meta_optimizer",
         "//third_party/eigen3",
-    #] + tf_additional_core_deps() + if_static([
-        ] + if_static([
+    ] + tf_additional_core_deps() + if_static([
         ":core_cpu_impl",
         ":function_ops_op_lib",
         ":functional_grad",
