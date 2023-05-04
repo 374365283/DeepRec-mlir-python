@@ -40,7 +40,7 @@ std::string ImportGraphDef(const std::string& proto, const std::string& pass_pip
   auto parse_input_status = ParseInputArrayInfo(input_names, input_data_types, input_data_shapes,
                                &specs.inputs);
   if (!parse_input_status.ok()) {
-    return "// error";
+    return "// error 1";
   }
   if (!output_names.empty()) {
     specs.outputs = absl::StrSplit(output_names, ',');
@@ -50,7 +50,7 @@ std::string ImportGraphDef(const std::string& proto, const std::string& pass_pip
   GraphDef graphdef;
   auto load_proto_status = tensorflow::LoadProtoFromBuffer(proto, &graphdef);
   if (!load_proto_status.ok()) {
-    return "// error";
+    return "// error 2";
   }
 
   // Convert graphdef to tf executor dialect.
@@ -58,7 +58,7 @@ std::string ImportGraphDef(const std::string& proto, const std::string& pass_pip
   mlir::MLIRContext context;
   auto module = ConvertGraphdefToMlir(graphdef, debug_info, specs, &context);
   if (!module.ok()) {
-    return "// error";
+    return "// error 3";
   }
 
   // Convert tf executor dialect to tf dialect.
@@ -67,11 +67,11 @@ std::string ImportGraphDef(const std::string& proto, const std::string& pass_pip
     std::string error;
     llvm::raw_string_ostream error_stream(error);
     if (failed(mlir::parsePassPipeline(pass_pipeline, pm, error_stream))) {
-      return "// error";
+      return "// error 4";
     }
 
     if (mlir::failed(pm.run(*module.ValueOrDie()))) {
-      return "// error";
+      return "// error 5";
     }
   }
   return MlirModuleToString(*module.ConsumeValueOrDie());
@@ -83,7 +83,7 @@ std::string ExportGraphDef(const std::string& mlir_txt, const std::string& pass_
   mlir::OwningModuleRef module;
   module = mlir::parseSourceString(mlir_txt, &context);
   if (!module) {
-      return "// error";
+      return "// error 1";
   }
 
   // Convert tf dialect to tf exector dialect.
@@ -92,10 +92,10 @@ std::string ExportGraphDef(const std::string& mlir_txt, const std::string& pass_
     std::string error;
     llvm::raw_string_ostream error_stream(error);
     if (failed(mlir::parsePassPipeline(pass_pipeline, pm, error_stream))) {
-      return "// error";
+      return "// error 2";
     }
     if (mlir::failed(pm.run(*module))) {
-      return "// error";
+      return "// error 3";
     }
   }
   

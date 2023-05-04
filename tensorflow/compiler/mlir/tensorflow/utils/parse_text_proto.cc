@@ -60,10 +60,10 @@ Status ParseTextProto(absl::string_view text_proto,
   }
   protobuf::io::ArrayInputStream input_stream(text_proto_without_prefix.data(),
                                               text_proto_without_prefix.size());
-  //if (parser.Parse(&input_stream,
-  //                 tensorflow::down_cast<protobuf::Message*>(parsed_proto))) {
-  //  return Status::OK();
-  //}
+  if (parser.Parse(&input_stream, static_cast<protobuf::Message*>(parsed_proto))) {
+                   //tensorflow::down_cast<protobuf::Message*>(parsed_proto))) {
+    return Status::OK();
+  }
   parsed_proto->Clear();
   return errors::InvalidArgument("Could not parse text proto: ", text_proto);
 #else
