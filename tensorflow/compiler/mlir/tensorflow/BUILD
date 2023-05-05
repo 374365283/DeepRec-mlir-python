@@ -328,11 +328,12 @@ cc_library(
         #"translate/control_to_executor_dialect.cc",
         #"translate/executor_to_control_dialect.cc",
 
+        #"transforms/shape_inference.cc",
+        #"transforms/shape_inference_pass.cc",
+
         "transforms/graph_pruning.cc",
         "transforms/executor_island_coarsening.cc",
         "transforms/materialize_mlir_passthrough_op.cc",
-        #"transforms/shape_inference.cc",
-        #"transforms/shape_inference_pass.cc",
         "transforms/optimize.cc",
         "translate/tf_functional_to_executor.cc",
     ],
@@ -352,7 +353,7 @@ cc_library(
         ":error_util",
         ":export_tf_dialect_op",
         ":mangling_util",
-        ":side_effect_analysis",
+        #":side_effect_analysis",
         ":tensorflow",
         ":tensorflow_optimize_inc_gen",
         ":tensorflow_types",
