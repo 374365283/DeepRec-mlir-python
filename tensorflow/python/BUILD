@@ -4847,12 +4847,12 @@ tf_python_pybind_extension(
     srcs = ["util/tensor_float_32.cc"],
     hdrs = [
              "//tensorflow/core/platform:tensor_float_32_hdr",
-             #"//tensorflow/compiler/mlir/python:pywrap_mlir_hdrs",
+             "//tensorflow/compiler/mlir/python:pywrap_mlir_hdrs",
            ],
     module_name = "_pywrap_tensor_float_32_execution",
     deps = [
-        #"//tensorflow/core:protos_all_cc",
-        #"//tensorflow/compiler/mlir/python:mlir",
+        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/compiler/mlir/python:mlir",
         "@pybind11",
     ]
 )
@@ -5298,7 +5298,6 @@ tf_py_wrap_cc(
         "//tensorflow/core/profiler/internal:python_scoped_annotation",
         "//tensorflow/tools/graph_transforms:transform_graph_lib",
         "//tensorflow/python/eager:pywrap_tfe_lib",
-        "//tensorflow/compiler/mlir/python:mlir",
     ] + (tf_additional_lib_deps() +
          tf_additional_plugin_deps() +
          tf_additional_verbs_deps() +

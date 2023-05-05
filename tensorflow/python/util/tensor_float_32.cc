@@ -15,8 +15,8 @@ limitations under the License.
 
 #include "include/pybind11/pybind11.h"
 #include "tensorflow/core/platform/tensor_float_32_utils.h"
-//#include "tensorflow/core/framework/graph.pb.h"
-//#include "tensorflow/compiler/mlir/python/mlir.h"
+#include "tensorflow/core/framework/graph.pb.h"
+#include "tensorflow/compiler/mlir/python/mlir.h"
 
 PYBIND11_MODULE(_pywrap_tensor_float_32_execution, m) {
   m.def("enable", &tensorflow::enable_tensor_float_32_execution);
@@ -27,7 +27,7 @@ PYBIND11_MODULE(_pywrap_tensor_float_32_execution, m) {
             return output;
         });
   
-  /*m.def("import_graphdef",
+  m.def("import_graphdef",
         [](const std::string &graphdef, const std::string &pass_pipeline,
            const std::string &input_names, const std::string &input_data_types,
            const std::string &input_data_shapes, const std::string &output_names) {
@@ -42,5 +42,5 @@ PYBIND11_MODULE(_pywrap_tensor_float_32_execution, m) {
           std::string output = tensorflow::ExportGraphDef(
               mlir_txt, pass_pipeline);
           return output;
-        }); */
+        }); 
 }
