@@ -1,8 +1,9 @@
-load("//tensorflow:tensorflow.bzl", "tf_gen_op_wrapper_cc")
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
+load("//tensorflow:tensorflow.default.bzl", "tf_gen_op_wrapper_cc")
 
 package(
-    default_visibility = ["//tensorflow/compiler/tf2xla:internal"],
-    licenses = ["notice"],  # Apache 2.0
+    default_visibility = ["//tensorflow/compiler/tf2xla:friends"],
+    licenses = ["notice"],
 )
 
 tf_gen_op_wrapper_cc(
@@ -25,7 +26,6 @@ cc_library(
         "//tensorflow/core:lib",
         "//tensorflow/core:protos_all_cc",
     ],
-    alwayslink = 1,
 )
 
 tf_gen_op_wrapper_cc(

@@ -28,6 +28,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/types.h"
 #include "tensorflow/compiler/xla/util.h"
 #include "tensorflow/compiler/xla/xla_data.pb.h"
+#include "tensorflow/tsl/platform/test_benchmark.h"
 
 namespace xla {
 namespace {
@@ -38,7 +39,7 @@ class ShapeTest : public ::testing::Test {
   const Shape token_ = ShapeUtil::MakeTokenShape();
   const Shape scalar_ = ShapeUtil::MakeShape(F32, {});
   const Shape scalar_with_tile_ =
-      ShapeUtil::MakeShapeWithLayout(F32, {}, {}, {Tile({256})});
+      ShapeUtil::MakeShapeWithLayout(F32, {}, {}, {}, {Tile({256})});
   const Shape matrix_ = ShapeUtil::MakeShape(U32, {1, 2});
   const Shape matrix2_ = ShapeUtil::MakeShapeWithLayout(S32, {3, 4}, {0, 1});
   const Shape tuple_ =
@@ -217,6 +218,35 @@ TEST_F(ShapeTest, SupportsAbslHash) {
       {opaque_, token_, scalar_, scalar_with_tile_, matrix_, matrix2_, tuple_,
        nested_tuple_, dynamic_matrix_}));
 }
+
+void BM_ShapeCopy(::testing::benchmark::State& state) {
+  // Create different shapes based on benchmark parameters:
+  Shape shape;
+  switch (state.range(0)) {
+    case 0: {
+      // Shape()
+      break;
+    }
+    case 1: {
+      // f32[1,2,2]{2,1,0}
+      shape = Shape(F32, {1, 2, 2}, {false, false, false}, {});
+      *shape.mutable_layout() = Layout({2, 1, 0});
+      break;
+    }
+    case 2: {
+      // f32[1,2,2]{2,1,0:T(2,128)}
+      shape = Shape(F32, {1, 2, 2}, {false, false, false}, {});
+      *shape.mutable_layout() = Layout({2, 1, 0}, {}, {Tile({2, 128})});
+      break;
+    }
+  }
+  state.SetLabel(shape.ToString(true));
+
+  for (auto s : state) {
+    Shape copy(shape);
+  }
+}
+BENCHMARK(BM_ShapeCopy)->Arg(0)->Arg(1)->Arg(2);
 
 }  // namespace
 }  // namespace xla

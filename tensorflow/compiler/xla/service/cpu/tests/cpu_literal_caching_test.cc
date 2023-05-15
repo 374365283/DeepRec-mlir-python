@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/compiler/xla/service/cpu/cpu_compiler.h"
+#include "tensorflow/compiler/xla/service/cpu/test_target_triple_helper.h"
 #include "tensorflow/compiler/xla/service/cpu/tests/cpu_codegen_test.h"
 #include "tensorflow/compiler/xla/service/hlo_parser.h"
 
@@ -25,7 +26,7 @@ class CpuDuplicateConstantsTest : public CpuCodegenTest {};
 TEST_F(CpuDuplicateConstantsTest, RepeatedArrayConstants) {
   // We use a while loop here to force the two constant HloInstructions to be in
   // different computations.  Otherwise the HLO optimizer itself CSEs them.
-  const string hlo_text = R"(
+  const std::string hlo_text = R"(
 HloModule RepeatedConstants
 
 while_body {
@@ -55,7 +56,7 @@ ENTRY main {
 }
 )";
 
-  string filecheck_pattern = R"(
+  std::string filecheck_pattern = R"(
 CHECK: private unnamed_addr constant [48 x i8]
 CHECK-NOT: private unnamed_addr constant [48 x i8]
 )";
@@ -64,7 +65,8 @@ CHECK-NOT: private unnamed_addr constant [48 x i8]
                           ParseAndReturnVerifiedModule(hlo_text));
 
   CpuAotCompilationOptions options{
-      /*triple=*/"x86_64-pc-linux", /*cpu_name=*/"", /*features=*/"",
+      /*triple=*/kTargetTripleForHost, /*cpu_name=*/kTargetCpuForHost,
+      /*features=*/"",
       /*entry_point_name=*/"entry",
       /*relocation_model=*/CpuAotCompilationOptions::RelocationModel::Static};
 
@@ -75,7 +77,7 @@ CHECK-NOT: private unnamed_addr constant [48 x i8]
 TEST_F(CpuDuplicateConstantsTest, RepeatedTupleConstants) {
   // We use a while loop here to force the two constant HloInstructions to be in
   // different computations.  Otherwise the HLO optimizer itself CSEs them.
-  const string hlo_text = R"(
+  const std::string hlo_text = R"(
 HloModule RepeatedConstants
 
 while_body {
@@ -101,7 +103,7 @@ ENTRY main {
 }
 )";
 
-  string filecheck_pattern = R"(
+  std::string filecheck_pattern = R"(
 CHECK-DAG: private unnamed_addr constant [4 x i8]
 CHECK-DAG: private unnamed_addr constant [8 x i8]
 CHECK-NOT: private unnamed_addr constant [4 x i8]
@@ -112,7 +114,8 @@ CHECK-NOT: private unnamed_addr constant [8 x i8]
                           ParseAndReturnVerifiedModule(hlo_text));
 
   CpuAotCompilationOptions options{
-      /*triple=*/"x86_64-pc-linux", /*cpu_name=*/"", /*features=*/"",
+      /*triple=*/kTargetTripleForHost, /*cpu_name=*/kTargetCpuForHost,
+      /*features=*/"",
       /*entry_point_name=*/"entry",
       /*relocation_model=*/CpuAotCompilationOptions::RelocationModel::Static};
 

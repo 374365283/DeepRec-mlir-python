@@ -28,6 +28,12 @@ const char kXlaHasHostTransferAttrName[] = "_xla_has_host_transfer";
 
 const char kXlaReplicaIdAttrName[] = "_xla_replica_id";
 
+const char kXlaIsPlaceholderForTailOcAttrName[] =
+    "_xla_is_placeholder_for_tail_oc";
+
+const char kXlaOriginalOutsideCompilationNodeName[] =
+    "_xla_original_oc_node_name";
+
 Status SetDeviceOrdinalAttributeForNode(Node* node, int device_ordinal) {
   if (!HasNodeAttr(node->def(), kXlaHasHostTransferAttrName)) {
     return errors::InvalidArgument("Node ", node->DebugString(),
@@ -68,7 +74,7 @@ Status SetDeviceOrdinalAttributeForNode(Node* node, int device_ordinal) {
     return errors::Internal("Unknown node type to set 'device_ordinal': ",
                             node->DebugString());
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 std::set<std::string> CalculateTokenInputsForOutputToken(const Graph& g) {
@@ -89,7 +95,11 @@ std::set<std::string> CalculateTokenInputsForOutputToken(const Graph& g) {
                }
 
                first_side_effecting_node_on_path = n;
-               results.insert(n->name());
+               string original_node_name;
+               TF_CHECK_OK(GetNodeAttr(n->def(),
+                                       kXlaOriginalOutsideCompilationNodeName,
+                                       &original_node_name));
+               results.insert(original_node_name);
              },
              [&](Node* n) {
                if (first_side_effecting_node_on_path == n) {
@@ -133,7 +143,7 @@ Status ParseHostComputeCoreList(absl::Span<const string> list_from_attr,
     }
     (*host_compute_core)[parts[0]] = core;
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace tensorflow

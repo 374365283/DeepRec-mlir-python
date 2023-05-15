@@ -16,6 +16,7 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_XLA_SERVICE_HLO_DCE_H_
 #define TENSORFLOW_COMPILER_XLA_SERVICE_HLO_DCE_H_
 
+#include "absl/container/flat_hash_map.h"
 #include "tensorflow/compiler/xla/service/hlo_computation.h"
 #include "tensorflow/compiler/xla/service/hlo_instruction.h"
 #include "tensorflow/compiler/xla/service/hlo_module.h"
@@ -35,15 +36,40 @@ namespace xla {
 // instructions cannot be deleted.
 class HloDCE : public HloModulePass {
  public:
+  HloDCE() : remove_cross_partition_collective_ops_(false) {}
+  explicit HloDCE(bool remove_cross_partition_collective_ops)
+      : remove_cross_partition_collective_ops_(
+            remove_cross_partition_collective_ops) {}
   ~HloDCE() override {}
   absl::string_view name() const override { return "dce"; }
 
   // Run DCE on a computation.
-  static StatusOr<bool> RunOnComputation(HloComputation* computation);
+  static StatusOr<bool> RunOnComputation(
+      HloComputation* computation, bool remove_cross_partition_collective_ops);
 
   // Run the pass on the given module. Returns whether the module was changed
   // (instructions were removed).
-  StatusOr<bool> Run(HloModule* module) override;
+  using HloPassInterface::Run;
+  StatusOr<bool> Run(
+      HloModule* module,
+      const absl::flat_hash_set<absl::string_view>& execution_threads) override;
+
+ private:
+  // Finds all computations that are not called by any instruction and removes
+  // them from the module. Returns whether any dead code was removed.
+  StatusOr<bool> RecursivelyRemoveDeadComputations(
+      HloModule* module,
+      const absl::flat_hash_set<absl::string_view>& execution_threads);
+
+  // Given a dead computation, decrements the ref count of all its called
+  // computations and checks if any of the subcomputations become dead after the
+  // removal. Returns whether all dead computations were successfully removed
+  // from the module.
+  Status RecursivelyRemoveDeadComputation(
+      HloModule* module, HloComputation* computation,
+      absl::flat_hash_map<HloComputation*, int>& live_call_counts);
+
+  bool remove_cross_partition_collective_ops_;
 };
 
 }  // namespace xla

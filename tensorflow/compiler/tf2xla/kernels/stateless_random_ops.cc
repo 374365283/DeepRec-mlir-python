@@ -16,6 +16,7 @@ limitations under the License.
 #include <cmath>
 
 #include "tensorflow/compiler/tf2xla/kernels/random_ops_util.h"
+#include "tensorflow/compiler/tf2xla/lib/broadcast.h"
 #include "tensorflow/compiler/tf2xla/lib/random.h"
 #include "tensorflow/compiler/tf2xla/shape_util.h"
 #include "tensorflow/compiler/tf2xla/type_util.h"
@@ -82,9 +83,7 @@ xla::XlaOp StatelessRngUniform(absl::string_view device_type_string,
 
   xla::XlaOp seed0 = xla::Reshape(xla::Slice(seeds, {0}, {1}, {1}), {});
   xla::XlaOp seed1 = xla::Reshape(xla::Slice(seeds, {1}, {2}, {1}), {});
-  xla::XlaOp key = ConvertElementType(seed0, xla::U64) |
-                   ShiftLeft(ConvertElementType(seed1, xla::U64),
-                             ConstantR0WithType(builder, xla::U64, 32));
+  xla::XlaOp key = GetU64FromS32Seeds(seed0, seed1);
   xla::XlaOp initial_state = xla::ConstantR0WithType(builder, xla::U64, 0);
   xla::PrimitiveType type = shape.element_type();
   switch (type) {
@@ -112,6 +111,33 @@ xla::XlaOp StatelessRngUniform(absl::string_view device_type_string,
 }
 
 namespace {
+
+xla::XlaOp StatelessRngUniformFullInt(absl::string_view device_type_string,
+                                      xla::XlaOp seeds,
+                                      const xla::Shape& shape) {
+  xla::XlaBuilder* builder = seeds.builder();
+
+  xla::XlaOp seed0 = xla::Reshape(xla::Slice(seeds, {0}, {1}, {1}), {});
+  xla::XlaOp seed1 = xla::Reshape(xla::Slice(seeds, {1}, {2}, {1}), {});
+  xla::XlaOp key = GetU64FromS32Seeds(seed0, seed1);
+  xla::XlaOp initial_state = xla::ConstantR0WithType(builder, xla::U64, 0);
+  xla::PrimitiveType type = shape.element_type();
+  xla::RngOutput output =
+      GetBitGeneratorForDevice(device_type_string)(key, initial_state, shape);
+  switch (type) {
+    case xla::U32:
+    case xla::U64:
+      return output.value;
+    case xla::S32:
+    case xla::S64:
+      return BitcastConvertType(output.value, type);
+    default:
+      return builder->ReportError(xla::Unimplemented(
+          "Types other than U32, S32, U64 and S64 are not implemented by "
+          "StatelessRngUniformFullInt; got: %s",
+          xla::primitive_util::LowercasePrimitiveTypeName(type)));
+  }
+}
 
 class StatelessRandomUniformOp : public XlaOpKernel {
  public:
@@ -211,6 +237,47 @@ REGISTER_XLA_OP(Name("StatelessRandomUniformInt")
                     .TypeConstraint("Tseed", DT_INT32),
                 StatelessRandomUniformIntOp);
 
+class StatelessRandomUniformFullIntOp : public XlaOpKernel {
+ public:
+  explicit StatelessRandomUniformFullIntOp(OpKernelConstruction* ctx)
+      : XlaOpKernel(ctx),
+        device_type_string_(ctx->device_type().type_string()) {
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("dtype", &dtype_));
+  }
+
+  void Compile(XlaOpKernelContext* ctx) override {
+    TensorShape shape;
+    OP_REQUIRES_OK(ctx, ctx->ConstantInputAsShape(0, &shape));
+
+    TensorShape seed_shape = ctx->InputShape(1);
+    OP_REQUIRES(ctx, seed_shape.dims() == 1 && seed_shape.dim_size(0) == 2,
+                errors::InvalidArgument("seed must have shape [2], not ",
+                                        seed_shape.DebugString()));
+
+    xla::XlaOp seed = ctx->Input(1);
+
+    xla::Shape xla_shape;
+    OP_REQUIRES_OK(ctx, TensorShapeToXLAShape(dtype_, shape, &xla_shape));
+    xla::XlaOp uniform =
+        StatelessRngUniformFullInt(device_type_string_, seed, xla_shape);
+
+    ctx->SetOutput(0, uniform);
+  }
+
+ private:
+  DataType dtype_;
+  string device_type_string_;
+
+  TF_DISALLOW_COPY_AND_ASSIGN(StatelessRandomUniformFullIntOp);
+};
+
+// TODO(phawkins): generalize to non-int32 seed types.
+REGISTER_XLA_OP(Name("StatelessRandomUniformFullInt")
+                    .CompileTimeConstantInput("shape")
+                    .TypeConstraint("dtype", {DT_INT32, DT_INT64})
+                    .TypeConstraint("Tseed", DT_INT32),
+                StatelessRandomUniformFullIntOp);
+
 class StatelessRandomNormalOp : public XlaOpKernel {
  public:
   explicit StatelessRandomNormalOp(OpKernelConstruction* ctx)
@@ -237,9 +304,8 @@ class StatelessRandomNormalOp : public XlaOpKernel {
     xla::XlaOp seed0 = xla::Reshape(xla::Slice(seed, {0}, {1}, {1}), {});
     xla::XlaOp seed1 = xla::Reshape(xla::Slice(seed, {1}, {2}, {1}), {});
     xla::XlaOp initial_state = xla::ConstantR0WithType(builder, xla::U64, 0);
-    xla::XlaOp key = ConvertElementType(seed0, xla::U64) |
-                     ShiftLeft(ConvertElementType(seed1, xla::U64),
-                               ConstantR0WithType(builder, xla::U64, 32));
+
+    xla::XlaOp key = GetU64FromS32Seeds(seed0, seed1);
     xla::XlaOp normal =
         xla::NormalFloatingPointDistribution(
             key, initial_state, GetBitGeneratorForDevice(device_type_string_),
@@ -306,6 +372,69 @@ REGISTER_XLA_OP(Name("StatelessTruncatedNormal")
                     .TypeConstraint("dtype", {DT_DOUBLE, DT_FLOAT, DT_BFLOAT16})
                     .TypeConstraint("Tseed", DT_INT32),
                 StatelessTruncatedNormalOp);
+
+class StatelessParameterizedTruncatedNormalOp : public XlaOpKernel {
+ public:
+  explicit StatelessParameterizedTruncatedNormalOp(OpKernelConstruction* ctx)
+      : XlaOpKernel(ctx),
+        device_type_string_(ctx->device_type().type_string()) {
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("dtype", &dtype_));
+  }
+
+  void Compile(XlaOpKernelContext* ctx) override {
+    TensorShape shape;
+    OP_REQUIRES_OK(ctx, ctx->ConstantInputAsShape(0, &shape));
+
+    TensorShape seed_shape = ctx->InputShape(1);
+    OP_REQUIRES(ctx, seed_shape == TensorShape({2}),
+                errors::InvalidArgument("seed must have shape [2], not ",
+                                        seed_shape.DebugString()));
+    xla::XlaOp seed = ctx->Input(1);
+    xla::XlaBuilder* builder = ctx->builder();
+
+    DataType rng_dtype = dtype_ == DT_DOUBLE ? DT_DOUBLE : DT_FLOAT;
+
+    xla::Shape xla_shape;
+    OP_REQUIRES_OK(ctx, TensorShapeToXLAShape(rng_dtype, shape, &xla_shape));
+
+    auto bcasted_means = BroadcastTo(ctx->Input(2), shape.dim_sizes());
+    OP_REQUIRES_OK(ctx, bcasted_means.status());
+    auto means = bcasted_means.value();
+
+    auto bcasted_stddevs = BroadcastTo(ctx->Input(3), shape.dim_sizes());
+    OP_REQUIRES_OK(ctx, bcasted_stddevs.status());
+    auto stddevs = bcasted_stddevs.value();
+
+    auto bcasted_minvals = BroadcastTo(ctx->Input(4), shape.dim_sizes());
+    OP_REQUIRES_OK(ctx, bcasted_minvals.status());
+    auto minvals = bcasted_minvals.value();
+
+    auto bcasted_maxvals = BroadcastTo(ctx->Input(5), shape.dim_sizes());
+    OP_REQUIRES_OK(ctx, bcasted_maxvals.status());
+    auto maxvals = bcasted_maxvals.value();
+
+    xla::XlaOp uniform = StatelessRngUniform(
+        device_type_string_, seed, xla_shape,
+        xla::MinPositiveNormalValue(builder, xla_shape.element_type()),
+        xla::One(builder, xla_shape.element_type()));
+    xla::XlaOp truncated_normal =
+        ParameterizedTruncatedNormal(uniform, means, stddevs, minvals, maxvals);
+    truncated_normal = MaybeConvertF32ToBF16(truncated_normal, dtype_);
+    ctx->SetOutput(0, truncated_normal);
+  }
+
+ private:
+  DataType dtype_;
+  string device_type_string_;
+
+  TF_DISALLOW_COPY_AND_ASSIGN(StatelessParameterizedTruncatedNormalOp);
+};
+
+REGISTER_XLA_OP(Name("StatelessParameterizedTruncatedNormal")
+                    .CompileTimeConstantInput("shape")
+                    .TypeConstraint("dtype", {DT_DOUBLE, DT_FLOAT, DT_BFLOAT16})
+                    .TypeConstraint("Tseed", DT_INT32),
+                StatelessParameterizedTruncatedNormalOp);
 
 }  // namespace
 }  // namespace tensorflow

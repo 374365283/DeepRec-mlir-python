@@ -15,28 +15,33 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/lite/utils/lstm_utils.h"
 
+#include <algorithm>
+
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/None.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"  // TF:llvm-project
-#include "mlir/IR/Attributes.h"  // TF:llvm-project
-#include "mlir/IR/Builders.h"  // TF:llvm-project
-#include "mlir/IR/Function.h"  // TF:llvm-project
-#include "mlir/IR/Identifier.h"  // TF:llvm-project
-#include "mlir/IR/Location.h"  // TF:llvm-project
-#include "mlir/IR/MLIRContext.h"  // TF:llvm-project
-#include "mlir/IR/OpDefinition.h"  // TF:llvm-project
-#include "mlir/IR/Operation.h"  // TF:llvm-project
-#include "mlir/IR/StandardTypes.h"  // TF:llvm-project
-#include "mlir/IR/Types.h"  // TF:llvm-project
-#include "mlir/IR/Value.h"  // TF:llvm-project
-#include "mlir/Support/LLVM.h"  // TF:llvm-project
-#include "mlir/Support/LogicalResult.h"  // TF:llvm-project
+#include "mlir/Dialect/Arith/IR/Arith.h"  // from @llvm-project
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
+#include "mlir/Dialect/Tensor/IR/Tensor.h"  // from @llvm-project
+#include "mlir/IR/Attributes.h"  // from @llvm-project
+#include "mlir/IR/Builders.h"  // from @llvm-project
+#include "mlir/IR/BuiltinAttributes.h"  // from @llvm-project
+#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
+#include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
+#include "mlir/IR/Location.h"  // from @llvm-project
+#include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "mlir/IR/OpDefinition.h"  // from @llvm-project
+#include "mlir/IR/Operation.h"  // from @llvm-project
+#include "mlir/IR/Types.h"  // from @llvm-project
+#include "mlir/IR/Value.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
+#include "mlir/Support/LogicalResult.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
+#include "tensorflow/compiler/mlir/tensorflow/utils/dynamic_shape_utils.h"
 
 namespace mlir {
 namespace TFL {
@@ -47,14 +52,14 @@ Value CreateI32SplatConst(OpBuilder* builder, ArrayRef<int64_t> shape,
                           int32_t val, mlir::Location location) {
   auto type = RankedTensorType::get(shape, builder->getIntegerType(32));
   auto attr = DenseElementsAttr::get(type, val);
-  return builder->create<ConstantOp>(location, type, attr);
+  return builder->create<arith::ConstantOp>(location, type, attr);
 }
 
 Value CreateF32SplatConst(OpBuilder* builder, ArrayRef<int64_t> shape,
                           float val, mlir::Location location) {
   auto type = RankedTensorType::get(shape, builder->getF32Type());
   auto attr = DenseElementsAttr::get(type, val);
-  return builder->create<ConstantOp>(location, type, attr);
+  return builder->create<arith::ConstantOp>(location, type, attr);
 }
 
 Value CreatTfF32ConstOp(OpBuilder* builder, ArrayRef<int64_t> shape, float val,
@@ -70,25 +75,34 @@ Value CreateI64DenseConst(OpBuilder* builder, ArrayRef<int64_t> shape,
   auto type = RankedTensorType::get(static_cast<int>(shape.size()),
                                     builder->getIntegerType(64));
   auto attr = DenseElementsAttr::get(type, values);
-  return builder->create<ConstantOp>(location, type, attr);
+  return builder->create<arith::ConstantOp>(location, type, attr);
+}
+
+Value CreateI32DenseConst(OpBuilder* builder, ArrayRef<int32_t> values,
+                          mlir::Location location) {
+  auto type = RankedTensorType::get(static_cast<int>(values.size()),
+                                    builder->getIntegerType(32));
+  auto attr = DenseElementsAttr::get(type, values);
+  return builder->create<arith::ConstantOp>(location, type, attr);
 }
 
 Value CreateNoneValue(OpBuilder* builder, mlir::Location location) {
-  return builder->create<mlir::ConstantOp>(location, builder->getNoneType(),
-                                           builder->getUnitAttr());
+  return builder->create<TFL::NoValueOp>(location, builder->getNoneType(),
+                                         builder->getUnitAttr());
 }
 
 Value Transpose(OpBuilder* builder, Value value_to_transpose,
-                SmallVector<int64_t, 4> perm, RankedTensorType original_type,
+                SmallVector<int32_t, 4> perm, RankedTensorType original_type,
                 mlir::Location location) {
   // Create a constant op for transpose permutation.
-  auto perm_op = CreateI64DenseConst(builder, perm, perm, location);
+  auto perm_op = CreateI32DenseConst(builder, perm, location);
 
   // Create tensor type for the transpose result.
   auto transpose_type = original_type;
-  auto transpose_shape = functional::map(
-      [transpose_type](int64_t dim) { return transpose_type.getDimSize(dim); },
-      perm);
+  auto transpose_shape =
+      llvm::to_vector<8>(llvm::map_range(perm, [transpose_type](int32_t dim) {
+        return transpose_type.getDimSize(dim);
+      }));
   auto elem_type = transpose_type.getElementType();
   auto result_type = RankedTensorType::get(transpose_shape, elem_type);
 
@@ -99,7 +113,7 @@ Value Transpose(OpBuilder* builder, Value value_to_transpose,
 Value Transpose2D(OpBuilder* builder, Value value_to_transpose,
                   RankedTensorType type, mlir::Location location) {
   // Create a constant op for transpose permutation.
-  SmallVector<int64_t, 4> perm = {1, 0};
+  SmallVector<int32_t, 4> perm = {1, 0};
   return Transpose(builder, value_to_transpose, perm, type, location);
 }
 
@@ -125,7 +139,7 @@ Value SliceRankedTensor(OpBuilder* builder, Value input,
   // the input tensor's dimensions, return 0-valued tensor of the requested
   // shape.
   ArrayRef<int64_t> input_shape = GetRankedTensorShape(input);
-  for (int i = 0; i < input_shape.size(); i++) {
+  for (int i = 0, end = input_shape.size(); i < end; i++) {
     if (begin_values[i] < 0 ||
         (begin_values[i] + size_values[i] > input_shape[i])) {
       return CreateF32SplatConst(builder, size_shape, 0, location);
@@ -146,6 +160,27 @@ Value SliceRankedTensor(OpBuilder* builder, Value input,
           size_values,
           input.getType().cast<RankedTensorType>().getElementType()),
       input, slice_i2c_begin, slice_i2c_size);
+}
+
+Value CreateStridedSliceOp(mlir::Location loc, ArrayRef<int64_t> output_shape,
+                           Value input, ArrayRef<int32_t> begin,
+                           ArrayRef<int32_t> end, ArrayRef<int32_t> strides,
+                           int64_t begin_mask, int64_t end_mask,
+                           int64_t ellipsis_mask, int64_t new_axis_mask,
+                           int64_t shrink_axis_mask, OpBuilder* builder) {
+  auto output_type = RankedTensorType::get(
+      output_shape, input.getType().cast<RankedTensorType>().getElementType());
+  auto begin_tensor = CreateI32DenseConst(builder, begin, loc);
+  auto end_tensor = CreateI32DenseConst(builder, end, loc);
+  auto strides_tensor = CreateI32DenseConst(builder, strides, loc);
+
+  return builder->create<TF::StridedSliceOp>(
+      loc, output_type, input, begin_tensor, end_tensor, strides_tensor,
+      builder->getI64IntegerAttr(begin_mask),
+      builder->getI64IntegerAttr(end_mask),
+      builder->getI64IntegerAttr(ellipsis_mask),
+      builder->getI64IntegerAttr(new_axis_mask),
+      builder->getI64IntegerAttr(shrink_axis_mask));
 }
 
 }  // namespace
@@ -348,12 +383,12 @@ void ConvertLSTMCellSimpleToFusedLSTM::GenerateFusedOpOperands() {
 
 void ConvertLSTMCellSimpleToFusedLSTM::UpdateFuncSignature() {
   // https://github.com/tensorflow/community/pull/113
-  SmallVector<int64_t, 2> output_shape{1, -1};
-  auto input_types = fused_func_op_.getType().getInputs();
-  auto output_type = mlir::RankedTensorType::get(
+  SmallVector<int64_t, 2> output_shape{1, tensorflow::kTFDynamicSize};
+  auto input_types = fused_func_op_.getFunctionType().getInputs();
+  auto output_type = tensorflow::GetTypeFromTFTensorShape(
       output_shape, input_.getType().cast<RankedTensorType>().getElementType());
-  fused_func_op_.setType(mlir::FunctionType::get(input_types, output_type,
-                                                 fused_func_op_.getContext()));
+  fused_func_op_.setType(mlir::FunctionType::get(fused_func_op_.getContext(),
+                                                 input_types, output_type));
 }
 
 LogicalResult ConvertLSTMCellSimpleToFusedLSTM::RewriteFunc() {
@@ -386,24 +421,31 @@ LogicalResult ConvertLSTMCellSimpleToFusedLSTM::RewriteFunc() {
       forget_layer_norm_coefficients_, cell_layer_norm_coefficients_,
       output_layer_norm_coefficients_, builder_.getStringAttr("TANH"),
       builder_.getF32FloatAttr(10.0), builder_.getF32FloatAttr(0.0),
-      builder_.getStringAttr("FULL"));
+      mlir::TFL::LSTMKernelTypeAttr::get(builder_.getContext(),
+                                         mlir::TFL::LSTMKernelType::FULL),
+      /*asymmetric_quantize_inputs=*/mlir::BoolAttr(),
+      /*input_to_input_intermediate=*/mlir::TypeAttr(),
+      /*input_to_forget_intermediate=*/mlir::TypeAttr(),
+      /*input_to_cell_intermediate=*/mlir::TypeAttr(),
+      /*input_to_output_intermediate=*/mlir::TypeAttr(),
+      /*effective_hidden_scale_intermediate=*/mlir::TypeAttr());
 
   // Cast the static shaped lstm result to FuncOp's signature -
   // Ranked but unknown 2nd dimension to support stacking these.
-  SmallVector<int64_t, 2> func_output_shape = {1, -1};
-  auto func_result_type = mlir::RankedTensorType::get(
+  SmallVector<int64_t, 2> func_output_shape = {1, tensorflow::kTFDynamicSize};
+  auto func_result_type = tensorflow::GetTypeFromTFTensorShape(
       func_output_shape,
       input_.getType().cast<RankedTensorType>().getElementType());
 
-  auto tensor_cast = builder_.create<mlir::TensorCastOp>(
-      fused_func_op_.getLoc(), lstm_.getResult(), func_result_type);
-  builder_.create<mlir::ReturnOp>(fused_func_op_.getLoc(),
-                                  tensor_cast.getResult());
+  auto tensor_cast = builder_.create<mlir::tensor::CastOp>(
+      fused_func_op_.getLoc(), func_result_type, lstm_.getResult());
+  builder_.create<mlir::func::ReturnOp>(fused_func_op_.getLoc(),
+                                        tensor_cast.getResult());
   return success();
 }
 
 LogicalResult ConvertLSTMCellSimpleToFusedLSTM::InitializeFromFuncAttributes() {
-  auto attr = fused_func_op_.getAttrOfType<StringAttr>(kTFImplements);
+  auto attr = fused_func_op_->getAttrOfType<StringAttr>(kTFImplements);
   if (!attr) {
     return fused_func_op_.emitError()
            << "Invalid function attribute, expected " << kTFImplements
@@ -588,18 +630,9 @@ LogicalResult CreateEqualSizeSplitVOp(Value input, int axis, int splits,
   return success();
 }
 
-void UpdateFuncSignature(int batch, int time, int output,
-                         mlir::FuncOp* func_op) {
-  SmallVector<int64_t, 4> output_shape{batch, time, output};
-  auto input_types = func_op->getType().getInputs();
-  auto element_type = input_types[0].cast<RankedTensorType>().getElementType();
-  auto output_type = mlir::RankedTensorType::get(output_shape, element_type);
-  func_op->setType(
-      mlir::FunctionType::get(input_types, output_type, func_op->getContext()));
-}
-
 // TODO(b/147436982): Consider refactor this to be more general.
-LogicalResult ConvertKerasLSTMLayer(mlir::FuncOp func_op, OpBuilder* builder) {
+LogicalResult ConvertKerasLSTMLayer(mlir::func::FuncOp func_op,
+                                    OpBuilder* builder) {
   // For argument order, please check out standard_lstm under
   // tensorflow/python/keras/layers/recurrent_v2.py
   Value input = func_op.getArgument(0);
@@ -614,7 +647,7 @@ LogicalResult ConvertKerasLSTMLayer(mlir::FuncOp func_op, OpBuilder* builder) {
 
   // TFL lstm only supports time-majored inputs, so if it's not time-majored,
   // we will transpose the inputs and outputs.
-  auto time_major_attr = func_op.getAttrOfType<BoolAttr>("tf.time_major");
+  auto time_major_attr = func_op->getAttrOfType<BoolAttr>("tf.time_major");
   if (time_major_attr == nullptr) return failure();
 
   bool time_majored = time_major_attr.getValue();
@@ -626,26 +659,21 @@ LogicalResult ConvertKerasLSTMLayer(mlir::FuncOp func_op, OpBuilder* builder) {
 
   auto final_inputs = input;
   auto final_input_type = input_type;
-  // We will transpose the inputs.
-  if (!time_majored) {
-    SmallVector<int64_t, 4> perm = {1, 0, 2};
-    final_inputs =
-        Transpose(builder, final_inputs, perm, input_type, func_op.getLoc());
-    final_input_type = final_inputs.getType().dyn_cast<RankedTensorType>();
-  }
 
   // Handle go_backwards:
   // LSTM in Keras semantic will reverse the input sequence if it's go_backwards
-  auto go_backwards_attr = func_op.getAttrOfType<BoolAttr>("tf.go_backwards");
+  auto go_backwards_attr = func_op->getAttrOfType<BoolAttr>("tf.go_backwards");
 
   if (go_backwards_attr != nullptr && go_backwards_attr.getValue()) {
-    // We assume input is already in {time, batch, size} layout.
-    final_inputs =
-        Reverse(builder, final_inputs, 0, final_input_type, func_op.getLoc());
+    int time_dim = time_majored ? 0 : 1;
+    final_inputs = Reverse(builder, final_inputs, time_dim, final_input_type,
+                           func_op.getLoc());
   }
 
-  int batch = final_input_type.getDimSize(1);
-  int time = final_input_type.getDimSize(0);
+  int batch = time_majored ? final_input_type.getDimSize(1)
+                           : final_input_type.getDimSize(0);
+  int time = time_majored ? final_input_type.getDimSize(0)
+                          : final_input_type.getDimSize(1);
 
   // Setup correct weights.
   RankedTensorType weight_type =
@@ -686,14 +714,19 @@ LogicalResult ConvertKerasLSTMLayer(mlir::FuncOp func_op, OpBuilder* builder) {
     return failure();
 
   // Build the lstm op.
-  SmallVector<int64_t, 3> output_shape = {time, batch, n_output};
+  SmallVector<int64_t, 3> output_shape;
+  if (time_majored) {
+    output_shape = {time, batch, n_output};
+  } else {
+    output_shape = {batch, time, n_output};
+  }
   auto result_type = mlir::RankedTensorType::get(
-      output_shape, input.getType().cast<RankedTensorType>().getElementType());
+      output_shape,
+      final_inputs.getType().cast<RankedTensorType>().getElementType());
 
-  Value none = builder->create<mlir::ConstantOp>(
-      func_op.getLoc(), builder->getNoneType(), builder->getUnitAttr());
+  Value none = CreateNoneValue(builder, func_op.getLoc());
   auto lstm = builder->create<mlir::TFL::UnidirectionalSequenceLSTMOp>(
-      func_op.getLoc(), result_type, /*input=*/input,
+      func_op.getLoc(), result_type, /*input=*/final_inputs,
       /*input_to_input_weights=*/weights_array->getResult(0),
       /*input_to_forget_weights=*/weights_array->getResult(1),
       /*input_to_cell_weights=*/weights_array->getResult(2),
@@ -716,32 +749,92 @@ LogicalResult ConvertKerasLSTMLayer(mlir::FuncOp func_op, OpBuilder* builder) {
       /*input_layer_norm_coefficients=*/none,
       /*forget_layer_norm_coefficients=*/none,
       /*cell_layer_norm_coefficients=*/none,
-      /*output_layer_norm_coefficients=*/none, builder->getStringAttr("TANH"),
-      builder->getF32FloatAttr(10.0), builder->getF32FloatAttr(0.0),
-      builder->getBoolAttr(true));
+      /*output_layer_norm_coefficients=*/none,
+      /*fused_activation_function*/ builder->getStringAttr("TANH"),
+      /*cell_clip*/ builder->getF32FloatAttr(10.0),
+      /*proj_clip*/ builder->getF32FloatAttr(0.0),
+      /*time_major*/ builder->getBoolAttr(time_majored),
+      /*asymmetric_quantize_inputs=*/mlir::BoolAttr(),
+      /*input_to_input_intermediate=*/mlir::TypeAttr(),
+      /*input_to_forget_intermediate=*/mlir::TypeAttr(),
+      /*input_to_cell_intermediate=*/mlir::TypeAttr(),
+      /*input_to_output_intermediate=*/mlir::TypeAttr(),
+      /*effective_hidden_scale_intermediate=*/mlir::TypeAttr());
 
-  auto final_output = lstm.getResult();
-  if (!time_majored) {
-    SmallVector<int64_t, 4> perm = {1, 0, 2};
-    final_output =
-        Transpose(builder, final_output, perm, result_type, func_op.getLoc());
+  auto final_output_full_sequences = lstm.getResult();
+
+  // Populate the last output: last output is sliced from the full sequences.
+  // If time_major: last_output = outputs[-1, :, :]
+  // else: last_output = outputs[:, -1, :]
+  //
+  // As we are creating the strided_slice op, we need to populate the following
+  // fields:
+  // end: should always be (0, 0, 0)
+  // strides: should always be (1, 1, 1)
+  // begin: should be (0, -1, 0) or (-1, 0, 0) if it's time-majored.
+  // new_axis_mask: should always be 0.
+  // ellipsis_mask: should always be 0.
+  // begin_mask & end_mask: should be 0b101 = 5 or 0b110 = 4 if it's
+  // time-majored. shrink_axis_mask: should be 0b010 = 2 or 0b001 = 1 if it's
+  // time-majored.
+  SmallVector<int64_t, 2> last_output_shape({batch, n_output});
+
+  SmallVector<int32_t, 3> end({0, 0, 0});
+  SmallVector<int32_t, 3> strides({1, 1, 1});
+  SmallVector<int32_t, 3> begin;
+
+  int64_t new_axis_mask = 0;
+  int64_t ellipsis_mask = 0;
+  int64_t begin_mask;
+  int64_t end_mask;
+  int64_t shrink_axis_mask;
+  if (time_majored) {
+    begin_mask = 6;
+    end_mask = 6;
+    shrink_axis_mask = 1;
+    begin = {-1, 0, 0};
+  } else {
+    begin_mask = 5;
+    end_mask = 5;
+    shrink_axis_mask = 2;
+    begin = {0, -1, 0};
   }
+
+  auto last_output = CreateStridedSliceOp(
+      func_op.getLoc(), last_output_shape, final_output_full_sequences, begin,
+      end, strides, begin_mask, end_mask, ellipsis_mask, new_axis_mask,
+      shrink_axis_mask, builder);
 
   SmallVector<Value, 5> outputs;
+  SmallVector<Type, 5> output_types;
 
-  for (int i = 0; i < 5; ++i) {
-    if (i == 1) {
-      // only this one is the real output.
-      outputs.push_back(final_output);
-    } else {
-      auto result_type =
-          func_op.getCallableResults()[i].dyn_cast<RankedTensorType>();
-      outputs.push_back(CreatTfF32ConstOp(builder, result_type.getShape(), 0.0f,
-                                          func_op.getLoc()));
-    }
+  // Due to the existence of the while loop, the timestamp may be unknown
+  // for the signature, for us, since we know the inputs, we can infer the time
+  // steps.
+
+  // Last output.
+  outputs.push_back(last_output);
+  output_types.push_back(last_output.getType());
+
+  // Full sequences.
+  outputs.push_back(final_output_full_sequences);
+  output_types.push_back(final_output_full_sequences.getType());
+
+  // All the rest: states, device.
+  for (int i = 2; i < 5; ++i) {
+    auto result_type =
+        func_op.getCallableResults()[i].dyn_cast<RankedTensorType>();
+    outputs.push_back(CreatTfF32ConstOp(builder, result_type.getShape(), 0.0f,
+                                        func_op.getLoc()));
+    output_types.push_back(result_type);
   }
 
-  builder->create<mlir::ReturnOp>(func_op.getLoc(), outputs);
+  // Update function signatures.
+  func_op.setType(mlir::FunctionType::get(func_op.getContext(),
+                                          func_op.getFunctionType().getInputs(),
+                                          output_types));
+
+  builder->create<mlir::func::ReturnOp>(func_op.getLoc(), outputs);
   return success();
 }
 

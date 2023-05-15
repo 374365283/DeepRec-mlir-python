@@ -84,7 +84,21 @@ REGISTER_XLA_OP(Name("Min").CompileTimeConstantInput("reduction_indices"),
 class MaxOp : public XlaReductionOp {
  public:
   explicit MaxOp(OpKernelConstruction* ctx)
-      : XlaReductionOp(ctx, ctx->input_type(0)) {}
+      : XlaReductionOp(ctx, ctx->input_type(0)) {
+    OP_REQUIRES_OK(ctx, PrimitiveTypeCheck(xla_reduction_type_));
+  }
+
+  static Status PrimitiveTypeCheck(xla::PrimitiveType xla_reduction_type) {
+    if (xla_reduction_type == xla::C64 || xla_reduction_type == xla::C128 ||
+        xla_reduction_type == xla::TUPLE ||
+        xla_reduction_type == xla::OPAQUE_TYPE) {
+      return errors::InvalidArgument(
+          "Unsupported PrimitiveType in MaxOp: '",
+          xla::PrimitiveType_Name(xla_reduction_type), "'");
+    } else {
+      return OkStatus();
+    }
+  }
 
   xla::XlaOp InitialValue(xla::XlaBuilder* builder) override {
     return xla::MinValue(builder, xla_reduction_type_);
@@ -116,7 +130,7 @@ class MeanOp : public XlaReductionOp {
   xla::XlaOp BuildFinalizer(
       xla::XlaBuilder* /*builder*/, const xla::XlaOp& input,
       const xla::XlaOp& reduce_output,
-      const std::vector<int64>& dimensions_to_reduce) override {
+      const std::vector<int64_t>& dimensions_to_reduce) override {
     if (dimensions_to_reduce.empty()) {
       return reduce_output;
     }

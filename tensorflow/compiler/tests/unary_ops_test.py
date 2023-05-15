@@ -14,19 +14,16 @@
 # ==============================================================================
 """Tests for XLA JIT compiler."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import unittest
 
 import numpy as np
-from six.moves import xrange  # pylint: disable=redefined-builtin
+import six
 
 from tensorflow.compiler.tests import xla_test
 from tensorflow.python.framework import dtypes
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import bitwise_ops
+from tensorflow.python.ops import gen_functional_ops
 from tensorflow.python.ops import gen_nn_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nn_ops
@@ -81,8 +78,17 @@ class UnaryOpsTest(xla_test.XLATestCase):
   def ListsAreClose(self, result, expected, rtol, atol):
     """Tests closeness of two lists of floats."""
     self.assertEqual(len(result), len(expected))
-    for i in xrange(len(result)):
+    for i in range(len(result)):
       self.assertAllClose(result[i], expected[i], rtol, atol)
+
+  def AssertCloseAndSorted(self, result, expected, rtol, atol):
+    """Tests that result and expeted are both close and sorted."""
+    self.assertAllClose(result, expected, rtol, atol)
+    self.assertAllEqual(np.sort(result), result)
+
+  def AssertAllEqual(self, result, expected, rtol, atol):
+    """Tests that result and expeted are exactly equal."""
+    self.assertAllEqual(result, expected)
 
   def testAllTypeOps(self):
     for dtype in self.numeric_types - {np.int8, np.uint8}:
@@ -133,6 +139,56 @@ class UnaryOpsTest(xla_test.XLATestCase):
           array_ops.stop_gradient,
           np.array([[-1, 1]], dtype=dtype),
           expected=np.array([[-1, 1]], dtype=dtype))
+
+  def testLog(self):
+    for dtype in self.float_types - {dtypes.bfloat16.as_numpy_dtype}:
+      tol = 1e-4 if dtype == np.float32 else 1e-9
+      # pylint: disable=invalid-unary-operand-type
+      x = np.linspace(-np.e, np.e, num=1000, dtype=dtype)
+      self._assertOpOutputMatchesExpected(
+          math_ops.log, x, expected=np.log(x), atol=tol, rtol=tol)
+
+      x = np.linspace(0., np.e * 1e-30, num=1000, dtype=dtype)
+      self._assertOpOutputMatchesExpected(
+          math_ops.log, x, expected=np.log(x), atol=tol, rtol=tol)
+
+      x = np.linspace(0., np.pi * 1e30, num=1000, dtype=dtype)
+      self._assertOpOutputMatchesExpected(
+          math_ops.log, x, expected=np.log(x), atol=tol, rtol=tol)
+
+  def testSin(self):
+    for dtype in self.float_types - {dtypes.bfloat16.as_numpy_dtype}:
+      tol = 1e-6 if dtype == np.float32 else 1e-12
+
+      x = np.linspace(-4 * np.e, 4 * np.e, num=1000, dtype=dtype)
+      self._assertOpOutputMatchesExpected(
+          math_ops.sin, x, expected=np.sin(x), rtol=tol, atol=tol)
+
+      x = np.linspace(0., np.e * 1e-30, num=1000, dtype=dtype)
+      self._assertOpOutputMatchesExpected(
+          math_ops.sin, x, expected=np.sin(x), rtol=tol, atol=tol)
+
+      if dtype == np.float64:
+        x = np.linspace(0., np.e * 1e8, num=1000, dtype=dtype)
+        self._assertOpOutputMatchesExpected(
+            math_ops.sin, x, expected=np.sin(x), rtol=tol, atol=1e-5)
+
+  def testCos(self):
+    for dtype in self.float_types - {dtypes.bfloat16.as_numpy_dtype}:
+      tol = 1e-6 if dtype == np.float32 else 1e-12
+
+      x = np.linspace(-4 * np.e, 4 * np.e, num=1000, dtype=dtype)
+      self._assertOpOutputMatchesExpected(
+          math_ops.cos, x, expected=np.cos(x), rtol=tol, atol=tol)
+
+      x = np.linspace(0., np.e * 1e-30, num=1000, dtype=dtype)
+      self._assertOpOutputMatchesExpected(
+          math_ops.cos, x, expected=np.cos(x), rtol=tol, atol=tol)
+
+      if dtype == np.float64:
+        x = np.linspace(0., np.e * 1e8, num=1000, dtype=dtype)
+        self._assertOpOutputMatchesExpected(
+            math_ops.cos, x, expected=np.cos(x), rtol=tol, atol=1e-5)
 
   def testFloatOps(self):
     for dtype in self.float_types:
@@ -202,9 +258,9 @@ class UnaryOpsTest(xla_test.XLATestCase):
 
       self._assertOpOutputMatchesExpected(
           math_ops.is_finite,
-          np.array(
-              [[np.NINF, -2, -1, 0, 0.5, 1, 2, np.inf, np.nan]], dtype=dtype),
-          expected=np.array([[0, 1, 1, 1, 1, 1, 1, 0, 0]], dtype=np.bool))
+          np.array([[np.NINF, -2, -1, 0, 0.5, 1, 2, np.inf, np.nan]],
+                   dtype=dtype),
+          expected=np.array([[0, 1, 1, 1, 1, 1, 1, 0, 0]], dtype=np.bool_))
 
       # Tests for tf.nn ops.
       self._assertOpOutputMatchesExpected(
@@ -235,13 +291,17 @@ class UnaryOpsTest(xla_test.XLATestCase):
           np.array([[1, 2]], dtype=dtype),
           expected=np.array([[0.540297, -0.41614]], dtype=dtype))
 
+      # Confirm that log1p will remain precise across a range of small values.
       self._assertOpOutputMatchesExpected(
           math_ops.log1p,
-          np.array([[1e-14, 1e-15, 0.6]], dtype=dtype),
-          expected=np.log1p(np.array([[1e-14, 1e-15, 0.6]],
-                                     dtype=dtype)).astype(dtype),
-          rtol=1e-4,
-          atol=1e-6)
+          np.array([[1e-14, 1e-15, 0.6, 2] + [x * 1e-5 for x in range(1, 20)]],
+                   dtype=dtype),
+          expected=np.log1p(
+              np.array(
+                  [[1e-14, 1e-15, 0.6, 2] + [x * 1e-5 for x in range(1, 20)]],
+                  dtype=dtype)).astype(dtype),
+          rtol=1e-15 if dtype == np.float64 else 1e-4,
+          atol=1e-15 if dtype == np.float64 else 1e-4)
 
       self._assertOpOutputMatchesExpected(
           math_ops.rint,
@@ -297,12 +357,13 @@ class UnaryOpsTest(xla_test.XLATestCase):
 
       self._assertOpOutputMatchesExpected(
           math_ops.tanh,
-          np.array(
-              [[1, 2, 3, 4], [np.inf, -np.inf, np.nan, 20], [19, -19, 22, -22]],
-              dtype=dtype),
-          expected=np.array([[0.76159418, 0.96402758, 0.99505478, 0.99932933],
-                             [1.0, -1.0, np.nan, 1.0], [1.0, -1.0, 1.0, -1.0]],
-                            dtype=dtype))
+          np.array([[1, 2, 3, 4], [np.inf, -np.inf, np.nan, 20],
+                    [19, -19, 22, -22]],
+                   dtype=dtype),
+          expected=np.array(
+              [[0.76159418, 0.96402758, 0.99505478, 0.99932933],
+               [1.0, -1.0, np.nan, 1.0], [1.0, -1.0, 1.0, -1.0]],
+              dtype=dtype))
 
       self._assertOpOutputMatchesExpected(
           nn_ops.log_softmax,
@@ -373,15 +434,19 @@ class UnaryOpsTest(xla_test.XLATestCase):
 
       self._assertOpOutputMatchesExpected(
           math_ops.sign,
-          np.array([[-2.0, -1.0, -0.0, +0.0, 1.0, 2.0]], dtype=dtype),
-          expected=np.array([[-1.0, -1.0, -0.0, +0.0, 1.0, 1.0]], dtype=dtype))
+          np.array([[-2.0, -1.0, -0.0, +0.0, 1.0, 2.0,
+                     float("nan")]],
+                   dtype=dtype),
+          expected=np.array([[-1.0, -1.0, -0.0, +0.0, 1.0, 1.0,
+                              float("nan")]],
+                            dtype=dtype))
 
       self._assertOpOutputMatchesExpected(
           math_ops.is_finite,
-          np.array(
-              [[42, float("inf"), -123], [float("nan"), 0, -0.0]], dtype=dtype),
-          expected=np.array(
-              [[True, False, True], [False, True, True]], dtype=np.bool))
+          np.array([[42, float("inf"), -123], [float("nan"), 0, -0.0]],
+                   dtype=dtype),
+          expected=np.array([[True, False, True], [False, True, True]],
+                            dtype=np.bool_))
 
       self._assertOpOutputMatchesExpected(
           math_ops.lgamma,
@@ -457,19 +522,41 @@ class UnaryOpsTest(xla_test.XLATestCase):
               ],
               dtype=dtype))
 
+  def testSigmoidNumericalStability(self):
+    for dtype in self.float_types:
+      if dtype != np.float16:
+        self._assertOpOutputMatchesExpected(
+            lambda x: math_ops.sigmoid(x) / math_ops.log1p(math_ops.exp(x)),
+            np.array([-40, 40], dtype=dtype),
+            expected=np.array([1.0, 0.025], dtype=dtype))
+
+  def testQuantizeAndDequantize(self):
+    for dtype in self.float_types:
+
       def quantize_and_dequantize_v2(x):
+        return array_ops.quantize_and_dequantize(
+            x, -127, 127, signed_input=True, num_bits=8)
+
+      def quantize_and_dequantize_v3(x):
+        return array_ops.quantize_and_dequantize_v3(
+            x, -127, 127, num_bits=8, signed_input=True, range_given=False)
+
+      def quantize_and_dequantize_v4(x):
         return array_ops.quantize_and_dequantize_v2(
             x, -127, 127, signed_input=True, num_bits=8)
 
-      self._assertOpOutputMatchesExpected(
-          quantize_and_dequantize_v2,
-          np.array([-1, -0.5, 0, 0.3], dtype=dtype),
-          expected=np.array([-1., -0.5, 0., 0.296875], dtype=dtype))
+      test_fns = (quantize_and_dequantize_v2, quantize_and_dequantize_v3,
+                  quantize_and_dequantize_v4)
+      for test_fn in test_fns:
+        self._assertOpOutputMatchesExpected(
+            test_fn,
+            np.array([-1, -0.5, 0, 0.3], dtype=dtype),
+            expected=np.array([-1., -0.5, 0., 0.296875], dtype=dtype))
 
       def quantize_and_dequantize_v2_round_half_up(x):
-        return array_ops.quantize_and_dequantize_v2(
+        return array_ops.quantize_and_dequantize(
             x,
-            -1,
+            -1.0,
             1.0,
             signed_input=True,
             num_bits=8,
@@ -478,10 +565,10 @@ class UnaryOpsTest(xla_test.XLATestCase):
 
       self._assertOpOutputMatchesExpected(
           quantize_and_dequantize_v2_round_half_up,
-          np.array([-0.8, -0.5, 0, 0.3, 0.8, -2, 33], dtype=dtype),
+          np.array([-0.8, -0.4, 0, 0.3, 0.8, -2, 33], dtype=dtype),
           expected=np.array([
               -102.0 / 127,
-              -63.0 / 127,
+              -51.0 / 127,
               0,
               38.0 / 127,
               102.0 / 127,
@@ -491,7 +578,7 @@ class UnaryOpsTest(xla_test.XLATestCase):
                             dtype=dtype))
 
       def quantize_and_dequantize_v2_round_half_to_even(x):
-        return array_ops.quantize_and_dequantize_v2(
+        return array_ops.quantize_and_dequantize(
             x,
             -1.0,
             1.0,
@@ -502,44 +589,17 @@ class UnaryOpsTest(xla_test.XLATestCase):
 
       self._assertOpOutputMatchesExpected(
           quantize_and_dequantize_v2_round_half_to_even,
-          np.array(
-              [
-                  -0.8,
-                  # The -0.5 should become -63.5 after scaling and with
-                  # rounding this should become -64. But with the test
-                  # unary_ops_test_cpu_ondemand, this fails as the result
-                  # before scaling becomes -63.499996 and gets rounded to -63.
-                  # TODO(sreenik): Some one more familiar with this test needs
-                  # to take a look and resolve this. This works on all other
-                  # variations of the platform like cpu, and gpu.
-                  # -0.5,
-                  0,
-                  0.3,
-                  0.8,
-                  -2,
-                  33
-              ],
-              dtype=dtype),
-          expected=np.array(
-              [
-                  -102.0 / 127,
-                  # -64.0 / 127,
-                  0,
-                  38.0 / 127,
-                  102.0 / 127,
-                  -128.0 / 127,
-                  1,
-              ],
-              dtype=dtype))
-
-      def quantize_and_dequantize_v3(x):
-        return array_ops.quantize_and_dequantize_v3(
-            x, -127, 127, num_bits=8, signed_input=True, range_given=False)
-
-      self._assertOpOutputMatchesExpected(
-          quantize_and_dequantize_v3,
-          np.array([-1, -0.5, 0, 0.3], dtype=dtype),
-          expected=np.array([-1., -0.5, 0., 0.296875], dtype=dtype))
+          np.array([-0.8, -0.4, 0, 0.3, 0.8, -2, 33], dtype=dtype),
+          expected=np.array([
+              -102.0 / 127,
+              -51.0 / 127,
+              0,
+              38.0 / 127,
+              102.0 / 127,
+              -128.0 / 127,
+              1,
+          ],
+                            dtype=dtype))
 
   def testComplexOps(self):
     for dtype in self.complex_types:
@@ -705,6 +765,38 @@ class UnaryOpsTest(xla_test.XLATestCase):
           np.array([0, -1, 1, 16, 42], dtype=dtype),
           expected=np.array([-1, 0, -2, -17, -43], dtype=dtype))
 
+      # Test population_count for array inputs.
+      raw_inputs = [
+          0, 1, -1, 3, -3, 5, -5, 14, -14, 127, 128, 255, 256, 65535, 65536,
+          2**31 - 1, 2**31, 2**32 - 1, 2**32, -2**32 + 1, -2**32, -2**63 + 1,
+          2**63 - 1
+      ]
+      # Only choose inputs which fit in the int dtype.
+      raw_inputs = list(
+          filter(lambda x: np.iinfo(dtype).min <= x <= np.iinfo(dtype).max,
+                 raw_inputs))
+      inputs = np.array(raw_inputs, dtype=dtype)
+
+      def count_bits(x):
+        return sum(bin(z).count("1") for z in six.iterbytes(x.tobytes()))
+
+      truth = [count_bits(x) for x in inputs]
+      self._assertOpOutputMatchesExpected(
+          bitwise_ops.population_count,
+          inputs,
+          expected=np.array(truth, dtype=np.uint8),
+          equality_test=self.AssertAllEqual)
+
+      # Test population_count for scalar inputs.
+      for raw_inp in raw_inputs:
+        inp = dtype(raw_inp)
+        truth = count_bits(inp)
+        self._assertOpOutputMatchesExpected(
+            bitwise_ops.population_count,
+            inp,
+            expected=np.uint8(truth),
+            equality_test=self.AssertAllEqual)
+
   def testNumericOps(self):
     for dtype in self.numeric_types - {np.int8, np.uint8}:
       self._assertOpOutputMatchesExpected(
@@ -740,14 +832,14 @@ class UnaryOpsTest(xla_test.XLATestCase):
     for dtype in self.float_types:
       self._assertOpOutputMatchesExpected(
           math_ops.is_inf,
-          np.array(
-              [[np.NINF, -2, -1, 0, 0.5, 1, 2, np.inf, np.nan]], dtype=dtype),
-          expected=np.array([[1, 0, 0, 0, 0, 0, 0, 1, 0]], dtype=np.bool))
+          np.array([[np.NINF, -2, -1, 0, 0.5, 1, 2, np.inf, np.nan]],
+                   dtype=dtype),
+          expected=np.array([[1, 0, 0, 0, 0, 0, 0, 1, 0]], dtype=np.bool_))
       self._assertOpOutputMatchesExpected(
           math_ops.is_nan,
-          np.array(
-              [[np.NINF, -2, -1, 0, 0.5, 1, 2, np.inf, np.nan]], dtype=dtype),
-          expected=np.array([[0, 0, 0, 0, 0, 0, 0, 0, 1]], dtype=np.bool))
+          np.array([[np.NINF, -2, -1, 0, 0.5, 1, 2, np.inf, np.nan]],
+                   dtype=dtype),
+          expected=np.array([[0, 0, 0, 0, 0, 0, 0, 0, 1]], dtype=np.bool_))
       self._assertOpOutputMatchesExpected(
           math_ops.sign,
           np.array([[np.nan]], dtype=dtype),
@@ -756,8 +848,8 @@ class UnaryOpsTest(xla_test.XLATestCase):
   def testLogicalOps(self):
     self._assertOpOutputMatchesExpected(
         math_ops.logical_not,
-        np.array([[True, False], [False, True]], dtype=np.bool),
-        expected=np.array([[False, True], [True, False]], dtype=np.bool))
+        np.array([[True, False], [False, True]], dtype=np.bool_),
+        expected=np.array([[False, True], [True, False]], dtype=np.bool_))
 
   def testBiasAddGrad(self):
     self._assertOpOutputMatchesExpected(
@@ -773,23 +865,50 @@ class UnaryOpsTest(xla_test.XLATestCase):
 
   def testCast(self):
     shapes = [[], [4], [2, 3], [2, 0, 4]]
-    types = (
-        set([dtypes.bool, dtypes.int32, dtypes.float32])
-        | self.complex_tf_types)
-    for shape in shapes:
-      for src_type in types:
-        for dst_type in types:
-          src = np.arange(np.prod(shape)).astype(src_type.as_numpy_dtype)
-          if src_type in self.complex_tf_types:
-            src += (np.arange(np.prod(shape)) * 2j).astype(
-                src_type.as_numpy_dtype)
-          src = src.reshape(shape)
+    types = {
+        dtypes.bool, dtypes.float32, dtypes.float64, dtypes.complex64,
+        dtypes.int32, dtypes.int64, dtypes.uint32, dtypes.uint64
+    }
+    for src_type in types:
+      for dst_type in types:
+        src_np_dtype = src_type.as_numpy_dtype
+        dst_np_dtype = dst_type.as_numpy_dtype
 
-          dst = src.astype(dst_type.as_numpy_dtype)
+        for shape in shapes:
+          src = np.arange(np.prod(shape)).astype(src_np_dtype)
+
+          if src_type in self.complex_tf_types:
+            src += (np.arange(np.prod(shape)) * 2j).astype(src_np_dtype)
+          src = src.reshape(shape)
+          dst = src.astype(dst_np_dtype)
           self._assertOpOutputMatchesExpected(
               lambda x, dst_type=dst_type: math_ops.cast(x, dst_type),
               src,
               expected=dst)
+
+        # Check special values.
+        if src_type.is_integer:
+          imin = np.iinfo(src_np_dtype).min
+          imax = np.iinfo(src_np_dtype).max
+          src = np.array([imin, imax, 0, 1, -1], dtype=src_np_dtype)
+        elif src_type in self.float_tf_types:
+          if dst_type.is_integer:
+            imin = np.iinfo(dst_np_dtype).min
+            imax = np.iinfo(dst_np_dtype).max // 2
+            src = np.array([imin, imax, 0, 1], dtype=src_np_dtype)
+          elif dst_type in self.float_tf_types:
+            fmin = np.finfo(dst_np_dtype).min
+            fmax = np.finfo(dst_np_dtype).max
+            tiny = np.finfo(dst_np_dtype).tiny
+            eps = np.finfo(dst_np_dtype).eps
+            src = np.array(
+                [fmin, fmax, np.nan, eps, -eps, tiny, -tiny, np.inf, -np.inf],
+                dtype=src_np_dtype)
+        dst = src.astype(dst_np_dtype)
+        self._assertOpOutputMatchesExpected(
+            lambda x, dst_type=dst_type: math_ops.cast(x, dst_type),
+            src,
+            expected=dst)
 
   def testBitcast(self):
     self._assertOpOutputMatchesExpected(
@@ -814,17 +933,33 @@ class UnaryOpsTest(xla_test.XLATestCase):
           np.array([1, 0x100000003f800000], np.int64),
           expected=np.array([1, 0x100000003f800000], np.uint64))
 
-  def testInvertPermutation(self):
+  def testBitcastInt8ToFloat(self):
     self._assertOpOutputMatchesExpected(
-        array_ops.invert_permutation,
-        np.array([1, 2, 0], np.int32),
-        expected=np.array([2, 0, 1], dtype=np.int32))
+        lambda x: array_ops.bitcast(x, dtypes.float32),
+        np.array([[1, 0, 0, 0], [0xd0, 0x0f, 0x49, 0x40]], np.int8),
+        expected=np.array([1e-45, 3.14159], np.float32))
+    self._assertOpOutputMatchesExpected(
+        lambda x: array_ops.bitcast(x, dtypes.np.int8),
+        np.array([1e-45, 3.14159], np.float32),
+        expected=np.array([[1, 0, 0, 0], [0xd0, 0x0f, 0x49, 0x40]], np.int8))
+
+  def testInvertPermutation(self):
+    for np_dtype in [np.int32, np.int64]:
+      self._assertOpOutputMatchesExpected(
+          array_ops.invert_permutation,
+          np.array([1, 2, 0], np_dtype),
+          expected=np.array([2, 0, 1], dtype=np_dtype))
 
   def testInvertPermutationTwiceIsNoop(self):
-    self._assertOpOutputMatchesExpected(
-        lambda x: array_ops.invert_permutation(array_ops.invert_permutation(x)),
-        np.array([1, 2, 0], np.int32),
-        expected=np.array([1, 2, 0], dtype=np.int32))
+
+    def invert_twice(x):
+      return array_ops.invert_permutation(array_ops.invert_permutation(x))
+
+    for np_dtype in [np.int32, np.int64]:
+      self._assertOpOutputMatchesExpected(
+          invert_twice,
+          np.array([1, 2, 0], np_dtype),
+          expected=np.array([1, 2, 0], dtype=np_dtype))
 
   def testRank(self):
     rank_op = lambda x: array_ops.rank_internal(x, optimize=False)
@@ -957,10 +1092,10 @@ class UnaryOpsTest(xla_test.XLATestCase):
       self._assertOpOutputMatchesExpected(
           make_op("NCHW_VECT_C"),
           np.arange(32, dtype=dtype).reshape((1, 8, 1, 1, 4)),
-          expected=np.array([[[[[0, 1], [8, 9]], [[16, 17], [24, 25]]],
-                              [[[2, 3], [10, 11]], [[18, 19], [26, 27]]],
-                              [[[4, 5], [12, 13]], [[20, 21], [28, 29]]],
-                              [[[6, 7], [14, 15]], [[22, 23], [30, 31]]]]],
+          expected=np.array([[[[[0, 1, 2, 3], [8, 9, 10, 11]],
+                               [[16, 17, 18, 19], [24, 25, 26, 27]]],
+                              [[[4, 5, 6, 7], [12, 13, 14, 15]],
+                               [[20, 21, 22, 23], [28, 29, 30, 31]]]]],
                             dtype=dtype))
 
   def testSpaceToDepth(self):
@@ -1009,21 +1144,31 @@ class UnaryOpsTest(xla_test.XLATestCase):
       self._assertOpOutputMatchesExpected(
           make_op("NCHW_VECT_C"),
           np.arange(32, dtype=dtype).reshape((1, 2, 2, 2, 4)),
-          expected=np.array([[[[[0, 1, 2, 3, 16, 17, 18, 19]]],
-                              [[[4, 5, 6, 7, 20, 21, 22, 23]]],
-                              [[[8, 9, 10, 11, 24, 25, 26, 27]]],
-                              [[[12, 13, 14, 15, 28, 29, 30, 31]]]]],
-                            dtype=dtype))
+          expected=np.array(
+              [[[[[0, 1, 2, 3]]], [[[16, 17, 18, 19]]], [[[4, 5, 6, 7]]],
+                [[[20, 21, 22, 23]]], [[[8, 9, 10, 11]]], [[[24, 25, 26, 27]]],
+                [[[12, 13, 14, 15]]], [[[28, 29, 30, 31]]]]],
+              dtype=dtype))
 
-  def _assertSoftplusMatchesExpected(self, features, dtype):
+  def _assertSoftplusMatchesExpected(self,
+                                     features,
+                                     dtype,
+                                     equality_test=None,
+                                     rtol=1e-6,
+                                     atol=9.1e-6):
     features = np.array(features, dtype=dtype)
     zero = np.asarray(0).astype(dtype)
     expected = np.logaddexp(zero, features).astype(dtype)
     self._assertOpOutputMatchesExpected(
-        nn_ops.softplus, features, expected=expected, rtol=1e-6, atol=9.1e-6)
+        nn_ops.softplus,
+        features,
+        expected=expected,
+        equality_test=equality_test,
+        rtol=rtol,
+        atol=atol)
 
   def testSoftplus(self):
-    for dtype in self.float_types:
+    for dtype in self.float_types & {dtypes.float32, dtypes.float64}:
       self._assertSoftplusMatchesExpected([[-2, 0, 8]], dtype)
       self._assertSoftplusMatchesExpected(
           [[-9, 7, -5, 3, -1], [1, -3, 5, -7, 9]], dtype)
@@ -1038,6 +1183,35 @@ class UnaryOpsTest(xla_test.XLATestCase):
           -log_eps, -log_eps - one, -log_eps + one, -log_eps - ten,
           -log_eps + ten
       ], dtype)
+
+      self._assertSoftplusMatchesExpected(
+          [0.69302183, 0.69324386],
+          dtype,
+          equality_test=self.AssertCloseAndSorted,
+          rtol=9e-5,
+          atol=9e-5)
+
+  def testToBool(self):
+    for dtype in self.numeric_types - self.complex_types:
+      self._assertOpOutputMatchesExpected(
+          gen_functional_ops.to_bool,
+          np.array(5, dtype=dtype),
+          expected=np.array(True))
+
+      self._assertOpOutputMatchesExpected(
+          gen_functional_ops.to_bool,
+          np.array(0, dtype=dtype),
+          expected=np.array(False))
+
+      self._assertOpOutputMatchesExpected(
+          gen_functional_ops.to_bool,
+          np.array([], dtype=dtype),
+          expected=np.array(False))
+
+      self._assertOpOutputMatchesExpected(
+          gen_functional_ops.to_bool,
+          np.array([1, 2, 3], dtype=dtype),
+          expected=np.array(True))
 
 
 if __name__ == "__main__":

@@ -23,11 +23,11 @@ limitations under the License.
 #include "tensorflow/compiler/xla/literal.h"
 #include "tensorflow/compiler/xla/shape_util.h"
 #include "tensorflow/compiler/xla/status_macros.h"
+#include "tensorflow/compiler/xla/stream_executor/stream_executor.h"
 #include "tensorflow/compiler/xla/types.h"
 #include "tensorflow/compiler/xla/util.h"
 #include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/platform/logging.h"
-#include "tensorflow/core/platform/stream_executor_no_cuda.h"
+#include "tensorflow/tsl/platform/logging.h"
 
 namespace xla {
 
@@ -55,7 +55,7 @@ Status GenericTransferManager::WriteSingleTupleIndexTable(
   stream->ThenDoHostCallback([element_pointers{std::move(element_pointers)}]() {
     /* holds reference to element_pointers in closure */
   });
-  return Status::OK();
+  return OkStatus();
 }
 
 void GenericTransferManager::TransferLiteralFromDevice(
@@ -69,23 +69,22 @@ void GenericTransferManager::TransferLiteralFromDevice(
     TF_RET_CHECK(stream->parent()->device_ordinal() ==
                  device_buffer.device_ordinal());
 
-    // The on-host and on-device shape should always be the same for the generic
-    // transfer manager.
-    TF_RET_CHECK(ShapeUtil::Equal(device_buffer.on_device_shape(),
-                                  device_buffer.on_host_shape()));
-
     TF_RETURN_IF_ERROR(ShapeUtil::ForEachSubshapeWithStatus(
-        device_buffer.on_host_shape(),
+        device_buffer.on_device_shape(),
         [&](const Shape& subshape, const ShapeIndex& index) -> Status {
           if (subshape.IsArray()) {
             stream->ThenMemcpy(
                 /*host_dst=*/literal.untyped_data(index),
                 /*gpu_src=*/device_buffer.buffer(index),
-                /*size=*/GetByteSizeRequirement(subshape));
+                // With bounded dynamic shapes, the shape of the device buffer
+                // (bounded allocation) can be bigger than the literal.
+                /*size=*/
+                GetByteSizeRequirement(
+                    ShapeUtil::GetSubshape(literal.shape(), index)));
           }
-          return Status::OK();
+          return OkStatus();
         }));
-    return Status::OK();
+    return OkStatus();
   }();
   if (!status.ok()) {
     done(status);
@@ -103,20 +102,15 @@ Status GenericTransferManager::TransferLiteralToDeviceAsync(
           << ShapeUtil::HumanString(shape)
           << "; device buffer: " << device_buffer;
 
-  // The on-host and on-device shape should always be the same for the generic
-  // transfer manager.
-  TF_RET_CHECK(ShapeUtil::Equal(device_buffer.on_device_shape(),
-                                device_buffer.on_host_shape()));
-
   TF_RET_CHECK(
-      ShapeUtil::Compatible(literal.shape(), device_buffer.on_host_shape()));
+      ShapeUtil::Compatible(literal.shape(), device_buffer.on_device_shape()));
   TF_RET_CHECK(stream->parent()->device_ordinal() ==
                device_buffer.device_ordinal());
 
   TF_RETURN_IF_ERROR(WriteTupleIndexTablesAsync(stream, device_buffer));
 
   return ShapeUtil::ForEachSubshapeWithStatus(
-      device_buffer.on_host_shape(),
+      device_buffer.on_device_shape(),
       [&](const Shape& device_subshape, const ShapeIndex& index) -> Status {
         se::DeviceMemoryBase device_memory = device_buffer.buffer(index);
         if (device_subshape.IsArray()) {
@@ -145,7 +139,7 @@ Status GenericTransferManager::TransferLiteralToDeviceAsync(
             return stream->BlockHostUntilDone();
           }
         }
-        return Status::OK();
+        return OkStatus();
       });
 }
 
@@ -155,8 +149,7 @@ Status GenericTransferManager::TransferLiteralToInfeed(
 }
 
 Status GenericTransferManager::TransferLiteralFromOutfeed(
-    se::StreamExecutor* executor, const Shape& literal_shape,
-    MutableBorrowingLiteral literal) {
+    se::StreamExecutor* executor, MutableBorrowingLiteral literal) {
   return Unimplemented("Generic transfer from Outfeed");
 }
 
@@ -167,8 +160,13 @@ Status GenericTransferManager::ResetDevices(
       "Device reset is not yet supported on this platform (b/30481585)");
 }
 
-int64 GenericTransferManager::GetByteSizeRequirement(const Shape& shape) const {
-  return ShapeUtil::ByteSizeOf(shape, pointer_size_);
+int64_t GenericTransferManager::GetByteSizeRequirement(
+    const Shape& shape) const {
+  if (shape.is_static() || shape.IsTuple()) {
+    return ShapeUtil::ByteSizeOf(shape, pointer_size_);
+  }
+  int64_t metadata_size = sizeof(int32_t) * shape.dimensions_size();
+  return ShapeUtil::ByteSizeOf(shape, pointer_size_) + metadata_size;
 }
 
 }  // namespace xla

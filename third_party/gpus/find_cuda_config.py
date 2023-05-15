@@ -73,9 +73,6 @@ class ConfigError(Exception):
   pass
 
 
-def _is_aarch64():
-  return platform.machine() == "aarch64"
-
 def _is_linux():
   return platform.system() == "Linux"
 
@@ -166,8 +163,8 @@ def _get_default_cuda_paths(cuda_version):
             "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v%s\\" %
             cuda_version)
     ]
-  return ["/usr/local/cuda-%s" % cuda_version, "/usr/local/cuda", "/usr"
-         ] + _get_ld_config_paths()
+  return ["/usr/local/cuda-%s" % cuda_version, "/usr/local/cuda", "/usr",
+         "/usr/local/cudnn"] + _get_ld_config_paths()
 
 
 def _header_paths():
@@ -179,6 +176,7 @@ def _header_paths():
       "include/*-linux-gnu",
       "extras/CUPTI/include",
       "include/cuda/CUPTI",
+      "local/cuda/extras/CUPTI/include",
   ]
 
 
@@ -191,6 +189,8 @@ def _library_paths():
       "lib/*-linux-gnu",
       "lib/x64",
       "extras/CUPTI/*",
+      "local/cuda/lib64",
+      "local/cuda/extras/CUPTI/lib64",
   ]
 
 
@@ -222,25 +222,20 @@ def _find_library(base_paths, library_name, required_version):
   return _find_file(base_paths, _library_paths(), filepattern)
 
 
-def _find_versioned_file(base_paths, relative_paths, filepattern,
+def _find_versioned_file(base_paths, relative_paths, filepatterns,
                          required_version, get_version):
   """Returns first valid path to a file that matches the requested version."""
-  if type(filepattern) not in [list, tuple]:
-    filepattern = [filepattern]
+  if type(filepatterns) not in [list, tuple]:
+    filepatterns = [filepatterns]
   for path in _cartesian_product(base_paths, relative_paths):
-    for pattern in filepattern:
-      for file in glob.glob(os.path.join(path, pattern)):
+    for filepattern in filepatterns:
+      for file in glob.glob(os.path.join(path, filepattern)):
         actual_version = get_version(file)
         if _matches_version(actual_version, required_version):
           return file, actual_version
-  if type(filepattern) not in [list, tuple]:
-    raise _not_found_error(
-        base_paths, relative_paths,
-        filepattern + " matching version '%s'" % required_version)
-  else:
-    raise _not_found_error(
-        base_paths, relative_paths,
-        filepattern[0] + " matching version '%s'" % required_version)
+  raise _not_found_error(
+      base_paths, relative_paths,
+      ", ".join(filepatterns) + " matching version '%s'" % required_version)
 
 
 def _find_header(base_paths, header_name, required_version, get_version):
@@ -276,12 +271,14 @@ def _find_cuda_config(base_paths, required_version):
   nvcc_path, nvcc_version = _find_versioned_file(base_paths, [
       "",
       "bin",
+      "local/cuda/bin",
   ], nvcc_name, cuda_version, get_nvcc_version)
 
   nvvm_path = _find_file(base_paths, [
       "nvvm/libdevice",
       "share/cuda",
       "lib/nvidia-cuda-toolkit/libdevice",
+      "local/cuda/nvvm/libdevice",
   ], "libdevice*.10.bc")
 
   cupti_header_path = _find_file(base_paths, _header_paths(), "cupti.h")
@@ -344,9 +341,10 @@ def _find_cublas_config(base_paths, required_version, cuda_version):
       "cublas_library_dir": os.path.dirname(library_path),
   }
 
+
 def _find_cusolver_config(base_paths, required_version, cuda_version):
 
-  if (_at_least_version(cuda_version, "11.0") or (_is_aarch64 and _at_least_version(cuda_version, "10.2"))):
+  if _at_least_version(cuda_version, "11.0"):
 
     def get_header_version(path):
       version = (
@@ -373,9 +371,10 @@ def _find_cusolver_config(base_paths, required_version, cuda_version):
       "cusolver_library_dir": os.path.dirname(library_path),
   }
 
+
 def _find_curand_config(base_paths, required_version, cuda_version):
 
-  if (_at_least_version(cuda_version, "11.0") or (_is_aarch64 and _at_least_version(cuda_version, "10.2"))):
+  if _at_least_version(cuda_version, "11.0"):
 
     def get_header_version(path):
       version = (
@@ -402,15 +401,15 @@ def _find_curand_config(base_paths, required_version, cuda_version):
       "curand_library_dir": os.path.dirname(library_path),
   }
 
+
 def _find_cufft_config(base_paths, required_version, cuda_version):
 
-  if (_at_least_version(cuda_version, "11.0") or (_is_aarch64 and _at_least_version(cuda_version, "10.2"))):
+  if _at_least_version(cuda_version, "11.0"):
 
     def get_header_version(path):
       version = (
           _get_header_version(path, name)
-          for name in ("CUFFT_VER_MAJOR", "CUFFT_VER_MINOR",
-                       "CUFFT_VER_PATCH"))
+          for name in ("CUFFT_VER_MAJOR", "CUFFT_VER_MINOR", "CUFFT_VER_PATCH"))
       return ".".join(version)
 
     header_path, header_version = _find_header(base_paths, "cufft.h",
@@ -457,7 +456,7 @@ def _find_cudnn_config(base_paths, required_version):
 
 def _find_cusparse_config(base_paths, required_version, cuda_version):
 
-  if (_at_least_version(cuda_version, "11.0") or (_is_aarch64 and _at_least_version(cuda_version, "10.2"))):
+  if _at_least_version(cuda_version, "11.0"):
 
     def get_header_version(path):
       version = (
@@ -521,15 +520,9 @@ def _find_tensorrt_config(base_paths, required_version):
       return None  # Versions not found, make _matches_version returns False.
     return ".".join(version)
 
-  try:
-    header_path, header_version = _find_header(base_paths, "NvInfer.h",
-                                               required_version,
-                                               get_header_version)
-  except ConfigError:
-    # TensorRT 6 moved the version information to NvInferVersion.h.
-    header_path, header_version = _find_header(base_paths, "NvInferVersion.h",
-                                               required_version,
-                                               get_header_version)
+  header_path, header_version = _find_header(base_paths, "NvInferVersion.h",
+                                             required_version,
+                                             get_header_version)
 
   tensorrt_version = header_version.split(".")[0]
   library_path = _find_library(base_paths, "nvinfer", tensorrt_version)
@@ -564,7 +557,7 @@ def _get_legacy_path(env_name, default=[]):
 
 def _normalize_path(path):
   """Returns normalized path, with forward slashes on Windows."""
-  path = os.path.normpath(path)
+  path = os.path.realpath(path)
   if _is_windows():
     path = path.replace("\\", "/")
   return path
@@ -610,8 +603,7 @@ def find_cuda_config():
     if tuple(int(v) for v in cuda_version.split(".")) < (11, 0):
       cufft_paths = cuda_paths
     cufft_version = os.environ.get("TF_CUFFT_VERSION", "")
-    result.update(
-        _find_cufft_config(cufft_paths, cufft_version, cuda_version))
+    result.update(_find_cufft_config(cufft_paths, cufft_version, cuda_version))
 
     cusparse_paths = base_paths
     if tuple(int(v) for v in cuda_version.split(".")) < (11, 0):
@@ -647,7 +639,7 @@ def main():
     for key, value in sorted(find_cuda_config().items()):
       print("%s: %s" % (key, value))
   except ConfigError as e:
-    sys.stderr.write(str(e))
+    sys.stderr.write(str(e) + '\n')
     sys.exit(1)
 
 

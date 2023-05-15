@@ -15,49 +15,57 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/python/tpu_driver/client/tpu_client.h"
 
+#include <algorithm>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
-#include "absl/memory/memory.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/time/time.h"
 #include "absl/types/span.h"
+#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "tensorflow/compiler/xla/literal.h"
-#include "tensorflow/compiler/xla/python/semaphore.h"
+#include "tensorflow/compiler/xla/pjrt/mlir_to_hlo.h"
+#include "tensorflow/compiler/xla/pjrt/semaphore.h"
 #include "tensorflow/compiler/xla/python/tpu_driver/tpu_driver.h"
 #include "tensorflow/compiler/xla/service/computation_placer.h"
 #include "tensorflow/compiler/xla/shape_util.h"
 #include "tensorflow/compiler/xla/util.h"
 #include "tensorflow/compiler/xla/xla_data.pb.h"
-#include "tensorflow/core/platform/threadpool.h"
-#include "tensorflow/core/profiler/lib/traceme.h"
+#include "tensorflow/tsl/platform/threadpool.h"
+#include "tensorflow/tsl/profiler/lib/traceme.h"
 
 namespace xla {
 
-constexpr char kTpuPlatform[] = "tpu";
-
-TpuDevice::TpuDevice(int id, int host_id, const std::array<int, 3>& coords,
-                     int core_on_chip)
-    : xla::Device(id, /*local_device_state=*/nullptr, kTpuPlatform, host_id),
+TpuDevice::TpuDevice(int id, int process_index,
+                     const std::array<int, 3>& coords, int core_on_chip)
+    : id_(id),
+      process_index_(process_index),
       coords_(coords),
-      core_on_chip_(core_on_chip) {}
-
-std::string TpuDevice::DebugString() const {
-  return absl::StrFormat("TPU_%i(host=%i,(%i,%i,%i,%i))", id(), host_id(),
-                         coords_[0], coords_[1], coords_[2], core_on_chip_);
+      core_on_chip_(core_on_chip) {
+  debug_string_ =
+      absl::StrFormat("TPU_%i(host=%i,(%i,%i,%i,%i))", id_, process_index_,
+                      coords_[0], coords_[1], coords_[2], core_on_chip_);
+  to_string_ = absl::StrFormat(
+      "TpuDevice(id=%i, process_index=%i, coords=(%s), core_on_chip=%i)", id_,
+      process_index_, absl::StrJoin(coords_, ","), core_on_chip_);
 }
 
-xla::StatusOr<std::vector<std::shared_ptr<xla::Device>>>
+absl::string_view TpuDevice::DebugString() const { return debug_string_; }
+
+absl::string_view TpuDevice::ToString() const { return to_string_; }
+
+xla::StatusOr<std::vector<std::shared_ptr<xla::PjRtDevice>>>
 TpuDevice::GetTpuDevices(const tpu_driver::SystemInfo& system_info) {
-  std::vector<std::shared_ptr<Device>> devices;
+  std::vector<std::shared_ptr<PjRtDevice>> devices;
   for (const auto& chip : system_info.tpu_chip()) {
     auto& coord = chip.chip_coord();
     std::array<int, 3> coords_array = {coord.x(), coord.y(), coord.z()};
-    int host_id = chip.host_id();
+    int process_index = chip.host_id();
     for (const auto& core : chip.core()) {
       auto device = std::make_shared<TpuDevice>(
-          core.id(), host_id, coords_array, core.core_on_chip_index());
+          core.id(), process_index, coords_array, core.core_on_chip_index());
       devices.push_back(device);
     }
   }
@@ -74,33 +82,35 @@ StatusOr<std::shared_ptr<PyTpuClient>> PyTpuClient::Get(
     return client_status.status();
   }
 
-  auto client = client_status.ConsumeValueOrDie();
+  auto client = std::move(client_status).value();
 
   tpu_driver::SystemInfo system_info;
   client->QuerySystemInfo(&system_info);
 
-  TF_ASSIGN_OR_RETURN(std::vector<std::shared_ptr<Device>> devices,
+  TF_ASSIGN_OR_RETURN(std::vector<std::shared_ptr<PjRtDevice>> devices,
                       TpuDevice::GetTpuDevices(system_info));
 
-  return std::make_shared<PyTpuClient>(kTpuPlatform, std::move(client),
+  return std::make_shared<PyTpuClient>(TpuPlatform(), std::move(client),
                                        std::move(devices),
                                        system_info.host_id());
 }
 
 PyTpuClient::PyTpuClient(std::string platform_name,
                          std::unique_ptr<tpu_driver::TpuDriver> driver,
-                         std::vector<std::shared_ptr<Device>> devices,
-                         int host_id)
+                         std::vector<std::shared_ptr<PjRtDevice>> devices,
+                         int process_index)
     : platform_name_(std::move(platform_name)),
+      platform_version_("tpu_driver (deprecated)"),
       driver_(std::move(driver)),
       devices_(std::move(devices)),
-      host_id_(host_id) {
-  for (const std::shared_ptr<Device>& device : devices_) {
+      process_index_(process_index) {
+  for (const std::shared_ptr<PjRtDevice>& device : devices_) {
+    tensorflow::down_cast<TpuDevice*>(device.get())->set_tpu_client(this);
     CHECK(id_to_device_.insert({device->id(), device}).second)
         << "Duplicate device id: " << device->id();
 
-    if (device->host_id() == host_id_) {
-      LOG(INFO) << "Detected local device, host id: " << host_id_
+    if (device->process_index() == process_index_) {
+      LOG(INFO) << "Detected local device, host id: " << process_index_
                 << ". device id: " << device->id();
       local_devices_.push_back(device);
     } else {
@@ -117,8 +127,8 @@ PyTpuClient::PyTpuClient(std::string platform_name,
   // TODO(frankchn): Check if thread pool size needs to be adjusted (perhaps
   // something like min(cores, devices_.size()) might be appropriate depending
   // on the number of devices.
-  pool_ = std::make_unique<tensorflow::thread::ThreadPool>(
-      tensorflow::Env::Default(), "PyTpuClient", devices_.size());
+  pool_ = std::make_unique<tsl::thread::ThreadPool>(
+      tsl::Env::Default(), "PyTpuClient", devices_.size());
 }
 
 Status PyTpuClient::TransferToInfeed(const LiteralSlice& literal,
@@ -154,10 +164,10 @@ StatusOr<DeviceAssignment> PyTpuClient::GetDefaultDeviceAssignment(
 Status PyTpuClient::CheckDeviceId(int device_id,
                                   absl::string_view caller_name) {
   if (device_id < 0 || device_id >= device_count()) {
-    return InvalidArgument("%s got bad device_id: %d (num_devices=%d)",
+    return InvalidArgument("%s got bad device_id: %d (num_devices=%d).",
                            caller_name, device_id, device_count());
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 static Status CheckDataType(xla::PrimitiveType dtype) {
@@ -165,21 +175,21 @@ static Status CheckDataType(xla::PrimitiveType dtype) {
       dtype == xla::PrimitiveType::U64) {
     return InvalidArgument(
         "64-bit data types are not yet supported on the TPU driver API. "
-        "Convert inputs to float32/int32 before using.");
+        "Convert inputs to float32/int32_t before using.");
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 /* static */
 StatusOr<std::unique_ptr<PyTpuBuffer>> PyTpuBuffer::FromLiterals(
     std::vector<BorrowingLiteral> leaves, const Shape& tuple_shape,
     std::shared_ptr<void> leaves_references,
-    std::shared_ptr<PyTpuClient> client, int device_id) {
-  tensorflow::profiler::TraceMe traceme("PyTpuBuffer::FromLiterals");
+    std::shared_ptr<PyTpuClient> client, std::shared_ptr<PjRtDevice> device) {
+  tsl::profiler::TraceMe traceme("PyTpuBuffer::FromLiterals");
   VLOG(1) << "PyTpuBuffer::FromLiterals: shape: " << tuple_shape.DebugString()
-          << " device id: " << device_id;
+          << " device: " << device->DebugString();
   TF_RETURN_IF_ERROR(
-      client->CheckDeviceId(device_id, "PyTpuBuffer::FromLiterals"));
+      client->CheckDeviceId(device->id(), "PyTpuBuffer::FromLiterals"));
   tpu_driver::TpuDriver* driver = client->driver();
 
   if (!tuple_shape.IsTuple()) {
@@ -193,7 +203,7 @@ StatusOr<std::unique_ptr<PyTpuBuffer>> PyTpuBuffer::FromLiterals(
           event->AddCallback([leaves_references](Status) {});
           return event;
         },
-        std::move(client), device_id);
+        std::move(client), std::move(device));
   }
 
   std::vector<std::unique_ptr<PyTpuBuffer>> child_buffers;
@@ -213,7 +223,7 @@ StatusOr<std::unique_ptr<PyTpuBuffer>> PyTpuBuffer::FromLiterals(
             [driver, &leaf, &indexed_shape](tpu_driver::BufferHandle* handle) {
               return driver->TransferToDevice(leaf.untyped_data(), handle, {});
             },
-            client, device_id));
+            client, device));
     child_buffer_ptrs.push_back(child_buffer.get());
     child_buffers.push_back(std::move(child_buffer));
     ++it_leaf;
@@ -223,13 +233,14 @@ StatusOr<std::unique_ptr<PyTpuBuffer>> PyTpuBuffer::FromLiterals(
   // `MakeTuple` will extract and make the tuple buffer hold onto the
   // `device_buffer_` contained in each `child_buffer`, so it's safe for
   // `child_buffers` to get destroyed before this call returns.
-  return MakeTuple(std::move(child_buffer_ptrs), std::move(client), device_id);
+  return MakeTuple(std::move(child_buffer_ptrs), std::move(client),
+                   std::move(device));
 }
 
 /* static */
 StatusOr<std::unique_ptr<PyTpuBuffer>> PyTpuBuffer::MakeTuple(
-    const std::vector<PyTpuBuffer*> buffers,
-    std::shared_ptr<PyTpuClient> client, int device_id) {
+    absl::Span<PyTpuBuffer* const> buffers, std::shared_ptr<PyTpuClient> client,
+    std::shared_ptr<PjRtDevice> device) {
   std::vector<Shape> child_shapes;
   std::vector<std::shared_ptr<TpuSharedBuffer>> child_device_buffers;
   std::vector<tpu_driver::BufferHandle*> child_handle_ptrs;
@@ -252,12 +263,12 @@ StatusOr<std::unique_ptr<PyTpuBuffer>> PyTpuBuffer::MakeTuple(
 
   Shape tuple_shape = ShapeUtil::MakeTupleShape(child_shapes);
   std::unique_ptr<tpu_driver::BufferHandle> tuple_handle =
-      client->driver()->AllocateTuple(device_id, tpu_driver::MemoryRegion::HBM,
-                                      child_handle_ptrs, {});
+      client->driver()->AllocateTuple(
+          device->id(), tpu_driver::MemoryRegion::HBM, child_handle_ptrs, {});
   auto tuple_device_buffer = std::make_shared<TpuSharedBuffer>(
       client->driver(), std::move(tuple_handle), std::move(child_events),
-      device_id);
-  return absl::make_unique<PyTpuBuffer>(
+      std::move(device));
+  return std::make_unique<PyTpuBuffer>(
       tuple_shape, std::move(tuple_device_buffer),
       std::move(child_device_buffers), std::move(client));
 }
@@ -268,7 +279,7 @@ PyTpuBuffer::PyTpuBuffer(
     std::shared_ptr<PyTpuClient> client)
     : client_(std::move(client)),
       on_host_shape_(std::move(on_host_shape)),
-      device_id_(device_buffer->device_id),
+      device_(device_buffer->device),
       device_buffer_(std::move(device_buffer)),
       child_buffers_(std::move(child_buffers)) {}
 
@@ -291,7 +302,7 @@ Status PyTpuBuffer::CopyToHostAsync() {
 
     if (host_value_) {
       // The host value has already been requested or is available.
-      return Status::OK();
+      return OkStatus();
     }
 
     host_value->value = std::make_shared<Literal>(on_host_shape_);
@@ -338,11 +349,11 @@ Status PyTpuBuffer::CopyToHostAsync() {
       }
     });
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 StatusOr<std::shared_ptr<Literal>> PyTpuBuffer::ToLiteral() {
-  tensorflow::profiler::TraceMe traceme("PyTpuBuffer::ToLiteral");
+  tsl::profiler::TraceMe traceme("PyTpuBuffer::ToLiteral");
   TF_RETURN_IF_ERROR(CopyToHostAsync());
 
   mu_.Lock();
@@ -364,15 +375,15 @@ std::shared_ptr<TpuSharedBuffer> PyTpuBuffer::DeviceBuffer() const {
 
 StatusOr<std::vector<std::unique_ptr<PyTpuBuffer>>>
 PyTpuBuffer::DestructureTuple() {
-  tensorflow::profiler::TraceMe traceme("PyTpuBuffer::DestructureTuple");
+  tsl::profiler::TraceMe traceme("PyTpuBuffer::DestructureTuple");
   if (!on_host_shape_.IsTuple()) {
     return InvalidArgument(
         "Attempted to destructure a PyTpuBuffer that did not have a tuple "
-        "shape; shape: %s",
+        "shape; shape: %s.",
         ShapeUtil::HumanString(on_host_shape_));
   }
   if (DeviceBuffer() == nullptr) {
-    return InvalidArgument("Attempted to destructure a deleted buffer");
+    return InvalidArgument("Attempted to destructure a deleted buffer.");
   }
 
   absl::MutexLock lock(&mu_);
@@ -380,7 +391,7 @@ PyTpuBuffer::DestructureTuple() {
   std::vector<std::unique_ptr<PyTpuBuffer>> results;
   results.reserve(num_children);
   for (int i = 0; i < num_children; ++i) {
-    results.push_back(absl::make_unique<PyTpuBuffer>(
+    results.push_back(std::make_unique<PyTpuBuffer>(
         on_host_shape_.tuple_shapes(i), child_buffers_.at(i),
         std::vector<std::shared_ptr<TpuSharedBuffer>>(), client_));
   }
@@ -388,15 +399,15 @@ PyTpuBuffer::DestructureTuple() {
 }
 
 StatusOr<std::unique_ptr<PyTpuBuffer>> PyTpuBuffer::CopyToDevice(
-    int dst_device_id) {
-  tensorflow::profiler::TraceMe traceme("PyTpuBuffer::CopyToDevice");
+    std::shared_ptr<PjRtDevice> dst_device) {
+  tsl::profiler::TraceMe traceme("PyTpuBuffer::CopyToDevice");
   if (on_host_shape_.IsTuple()) {
     return Unimplemented("CopyToDevice for tuples is not supported.");
   }
 
   std::shared_ptr<TpuSharedBuffer> src_device_buffer = DeviceBuffer();
-  if (dst_device_id == device_id_) {
-    return absl::make_unique<PyTpuBuffer>(
+  if (dst_device->id() == device_->id()) {
+    return std::make_unique<PyTpuBuffer>(
         on_host_shape_, src_device_buffer,
         std::vector<std::shared_ptr<TpuSharedBuffer>>(), client_);
   }
@@ -414,7 +425,7 @@ StatusOr<std::unique_ptr<PyTpuBuffer>> PyTpuBuffer::CopyToDevice(
             return driver->TransferFromDeviceToDevice(
                 src_device_buffer->handle.get(), dst_handle, src_wait_for_use);
           },
-          client_, dst_device_id));
+          client_, std::move(dst_device)));
   // TODO(jiawenhao): This may be too pessimistic: it prevents future readers
   // from reading `src_device_buffer` until the device-to-device copy is done.
   // Should this go into a new `TpuSharedBuffer::wait_for_dealloc` field?
@@ -426,19 +437,26 @@ StatusOr<std::unique_ptr<PyTpuBuffer>> PyTpuBuffer::CopyToDevice(
 }
 
 Status PyTpuBuffer::BlockHostUntilReady() {
-  tensorflow::profiler::TraceMe traceme("PyTpuBuffer::BlockHostUntilReady");
-  return DeviceBuffer()->handle->OnReady()->Await();
+  tsl::profiler::TraceMe traceme("PyTpuBuffer::BlockHostUntilReady");
+  std::shared_ptr<TpuSharedBuffer> device_buffer = DeviceBuffer();
+  if (!device_buffer) {
+    return InvalidArgument(
+        "BlockHostUntilReady() called on deleted or donated buffer");
+  }
+  return device_buffer->handle->OnReady()->Await();
 }
 
 /* static */
 StatusOr<std::unique_ptr<PyTpuBuffer>> PyTpuBuffer::AllocateBuffer(
-    const Shape& shape, std::shared_ptr<PyTpuClient> client, int device_id) {
-  tensorflow::profiler::TraceMe traceme("PyTpuBuffer::AllocateBuffer");
+    const Shape& shape, std::shared_ptr<PyTpuClient> client,
+    std::shared_ptr<PjRtDevice> device) {
+  tsl::profiler::TraceMe traceme("PyTpuBuffer::AllocateBuffer");
   VLOG(1) << "PyTpuBuffer::AllocateBuffer: shape: " << shape.DebugString()
-          << " device ordinal: " << device_id;
+          << " device: " << device->DebugString();
 
   if (!shape.IsTuple()) {
-    return CreateBuffer(shape, absl::nullopt, std::move(client), device_id);
+    return CreateBuffer(shape, std::nullopt, std::move(client),
+                        std::move(device));
   }
 
   std::vector<std::unique_ptr<PyTpuBuffer>> child_buffers;
@@ -448,7 +466,7 @@ StatusOr<std::unique_ptr<PyTpuBuffer>> PyTpuBuffer::AllocateBuffer(
 
   for (const auto& child_shape : shape.tuple_shapes()) {
     TF_ASSIGN_OR_RETURN(std::unique_ptr<PyTpuBuffer> child_buffer,
-                        AllocateBuffer(child_shape, client, device_id));
+                        AllocateBuffer(child_shape, client, device));
     child_buffer_ptrs.push_back(child_buffer.get());
     child_buffers.push_back(std::move(child_buffer));
   }
@@ -457,21 +475,23 @@ StatusOr<std::unique_ptr<PyTpuBuffer>> PyTpuBuffer::AllocateBuffer(
   // `device_buffer_` contained in each `child_buffer`, so it's safe for
   // `child_buffers` to get destroyed before this call returns.
   return PyTpuBuffer::MakeTuple(child_buffer_ptrs, std::move(client),
-                                device_id);
+                                std::move(device));
 }
 
 /*static*/
 StatusOr<std::unique_ptr<PyTpuBuffer>> PyTpuBuffer::CreateBuffer(
-    const Shape& non_tuple_shape, absl::optional<BufferInitializer> initializer,
-    std::shared_ptr<PyTpuClient> client, int device_id) {
-  tensorflow::profiler::TraceMe traceme("PyTpuBuffer::CreateBuffer");
+    const Shape& non_tuple_shape, std::optional<BufferInitializer> initializer,
+    std::shared_ptr<PyTpuClient> client, std::shared_ptr<PjRtDevice> device) {
+  tsl::profiler::TraceMe traceme("PyTpuBuffer::CreateBuffer");
   VLOG(1) << "PyTpuBuffer::CreateBuffer: shape: "
-          << non_tuple_shape.DebugString() << " device id: " << device_id;
+          << non_tuple_shape.DebugString()
+          << " device: " << device->DebugString();
   TF_RET_CHECK(!non_tuple_shape.IsTuple());
   TF_RETURN_IF_ERROR(CheckDataType(non_tuple_shape.element_type()));
 
-  std::unique_ptr<tpu_driver::BufferHandle> handle = client->driver()->Allocate(
-      device_id, tpu_driver::MemoryRegion::HBM, non_tuple_shape.ToProto(), {});
+  std::unique_ptr<tpu_driver::BufferHandle> handle =
+      client->driver()->Allocate(device->id(), tpu_driver::MemoryRegion::HBM,
+                                 non_tuple_shape.ToProto(), {});
 
   // If this buffer needs to be initialized, anyone using this buffer must wait
   // for the initialization event in `wait_for_use` to finish first.
@@ -481,15 +501,16 @@ StatusOr<std::unique_ptr<PyTpuBuffer>> PyTpuBuffer::CreateBuffer(
     wait_for_use.push_back(std::move(init));
   }
   auto device_buffer = std::make_shared<TpuSharedBuffer>(
-      client->driver(), std::move(handle), std::move(wait_for_use), device_id);
+      client->driver(), std::move(handle), std::move(wait_for_use),
+      std::move(device));
 
-  return absl::make_unique<PyTpuBuffer>(
+  return std::make_unique<PyTpuBuffer>(
       non_tuple_shape, std::move(device_buffer),
       std::vector<std::shared_ptr<TpuSharedBuffer>>(), client);
 }
 
-static std::shared_ptr<Device> LookupDevice(const PyTpuClient& client,
-                                            int device_id) {
+static std::shared_ptr<PjRtDevice> LookupDevice(const PyTpuClient& client,
+                                                int device_id) {
   auto it = client.id_to_device().find(device_id);
   CHECK(it != client.id_to_device().end())
       << "Unknown device id: " << device_id;
@@ -499,9 +520,10 @@ static std::shared_ptr<Device> LookupDevice(const PyTpuClient& client,
 PyTpuExecutable::PyTpuExecutable(
     std::unique_ptr<tpu_driver::CompiledProgramHandle> compiled_program,
     DeviceAssignment device_assignment, std::shared_ptr<PyTpuClient> client,
-    xla::Shape result_shape)
+    xla::Shape result_shape, bool tuple_arguments)
     : client_(std::move(client)),
       device_assignment_(std::move(device_assignment)),
+      tuple_arguments_(tuple_arguments),
       result_shape_(std::move(result_shape)) {
   VLOG(1) << "DeviceAssignment. " << device_assignment_.ToString();
   const int num_replicas = device_assignment_.replica_count();
@@ -510,8 +532,8 @@ PyTpuExecutable::PyTpuExecutable(
   for (int replica = 0; replica < num_replicas; ++replica) {
     for (int partition = 0; partition < num_partitions; ++partition) {
       int device_id = device_assignment_(replica, partition);
-      std::shared_ptr<Device> device = LookupDevice(*client_, device_id);
-      if (device->host_id() != client_->host_id()) {
+      std::shared_ptr<PjRtDevice> device = LookupDevice(*client_, device_id);
+      if (device->process_index() != client_->process_index()) {
         VLOG(3) << "Non-local device: " << device_id;
         continue;
       }
@@ -531,19 +553,20 @@ PyTpuExecutable::PyTpuExecutable(
 }
 
 PyTpuExecutable::ExecuteResult PyTpuExecutable::ExecuteHelper(
-    absl::Span<const std::vector<PyTpuBuffer*>> all_core_arguments,
+    absl::Span<const std::vector<PyTpuBuffer*>> maybe_tupled_args,
     absl::Span<PyTpuBuffer* const> this_core_arguments, int replica,
     int partition, const RunId& run_id) {
   const int device_id = device_assignment_(replica, partition);
-  std::shared_ptr<Device> device = LookupDevice(*client_, device_id);
-  CHECK_EQ(device->host_id(), client_->host_id());
-  tensorflow::profiler::TraceMe traceme("PyTpuExecutable::Execute");
+  std::shared_ptr<PjRtDevice> device = LookupDevice(*client_, device_id);
+  CHECK_EQ(device->process_index(), client_->process_index());
+  tsl::profiler::TraceMe traceme("PyTpuExecutable::Execute");
   VLOG(3) << "Replica " << replica << ", partition " << partition
           << " mapped to device id for execution: " << device_id;
 
   std::unique_ptr<::xla::PyTpuBuffer> output_buffer =
-      ::xla::PyTpuBuffer::AllocateBuffer(result_shape_, client_, device_id)
-          .ValueOrDie();
+      ::xla::PyTpuBuffer::AllocateBuffer(result_shape_, client_,
+                                         std::move(device))
+          .value();
   VLOG(1) << "Created output buffer: " << result_shape_.DebugString();
 
   std::vector<tpu_driver::BufferHandle*> inputs;
@@ -558,9 +581,9 @@ PyTpuExecutable::ExecuteResult PyTpuExecutable::ExecuteHelper(
     inputs.push_back(input_handle->DeviceBuffer()->handle.get());
   }
 
-  for (const auto& core_args : all_core_arguments) {
+  for (const auto& core_args : maybe_tupled_args) {
     for (const auto* handle : core_args) {
-      for (auto pending_event : handle->DeviceBuffer()->wait_for_use) {
+      for (const auto& pending_event : handle->DeviceBuffer()->wait_for_use) {
         ready_to_execute.push_back(pending_event.get());
       }
     }
@@ -581,10 +604,10 @@ PyTpuExecutable::ExecuteResult PyTpuExecutable::ExecuteHelper(
 static const absl::Duration kWarnExecutionDelay = absl::Seconds(10);
 
 // Delay before terminating a stalled execute call.
-static const absl::Duration kMaxExecutionDelay = absl::Seconds(120);
+static const absl::Duration kMaxExecutionDelay = absl::Minutes(60);
 
 Status WaitForExecuteEvent(tpu_driver::Event* event) {
-  absl::optional<Status> opt_status;
+  std::optional<Status> opt_status;
   auto start_time = absl::Now();
 
   while (!opt_status.has_value() &&
@@ -598,7 +621,7 @@ Status WaitForExecuteEvent(tpu_driver::Event* event) {
   }
 
   if (!opt_status.has_value()) {
-    return tensorflow::errors::DeadlineExceeded(
+    return tsl::errors::DeadlineExceeded(
         absl::StrFormat("TPU program took more than %d seconds to complete.",
                         absl::ToInt64Seconds(kMaxExecutionDelay)));
   }
@@ -606,24 +629,32 @@ Status WaitForExecuteEvent(tpu_driver::Event* event) {
   return opt_status.value();
 }
 
-StatusOr<std::unique_ptr<PyTpuBuffer>> PyTpuExecutable::Execute(
+StatusOr<std::vector<std::unique_ptr<PyTpuBuffer>>> PyTpuExecutable::Execute(
     absl::Span<PyTpuBuffer* const> argument_handles) {
   if (num_replicas() != 1) {
     return InvalidArgument(
-        "Attempted to execute computation with %d replicas using Execute()",
+        "Attempted to execute computation with %d replicas using Execute().",
         num_replicas());
   }
   if (num_partitions() != 1) {
     return InvalidArgument(
-        "Attempted to execute computation with %d partitions using Execute()",
+        "Attempted to execute computation with %d partitions using Execute().",
         num_partitions());
   }
 
-  std::vector<PyTpuBuffer*> all_core_arguments(argument_handles.begin(),
-                                               argument_handles.end());
-
+  std::vector<PyTpuBuffer*> maybe_tupled_args;
+  std::unique_ptr<PyTpuBuffer> tupled_arguments;
+  if (tuple_arguments_) {
+    TF_ASSIGN_OR_RETURN(tupled_arguments,
+                        PyTpuBuffer::MakeTuple(argument_handles, client_,
+                                               local_devices_.front()));
+    maybe_tupled_args = {tupled_arguments.get()};
+  } else {
+    maybe_tupled_args = std::vector<PyTpuBuffer*>(argument_handles.begin(),
+                                                  argument_handles.end());
+  }
   ExecuteResult result =
-      ExecuteHelper(absl::MakeSpan(&all_core_arguments, 1), argument_handles,
+      ExecuteHelper(absl::MakeSpan(&maybe_tupled_args, 1), maybe_tupled_args,
                     /*replica=*/0, /*partition=*/0, RunId());
 
   Status status = WaitForExecuteEvent(result.on_execute_finished.get());
@@ -633,34 +664,26 @@ StatusOr<std::unique_ptr<PyTpuBuffer>> PyTpuExecutable::Execute(
     return status;
   }
 
-  return std::move(result.buffer);
-}
-
-StatusOr<std::vector<std::unique_ptr<PyTpuBuffer>>>
-PyTpuExecutable::ExecutePerReplica(
-    absl::Span<const std::vector<PyTpuBuffer*>> argument_handles) {
-  tensorflow::profiler::TraceMe traceme("PyTpuExecutable::ExecutePerReplica");
-  if (num_partitions() != 1) {
-    return InvalidArgument(
-        "Attempted to execute computation with %d partitions using "
-        "ExecutePerReplica()",
-        num_partitions());
+  if (result.buffer->on_host_shape().IsTuple()) {
+    return result.buffer->DestructureTuple();
+  } else {
+    std::vector<std::unique_ptr<PyTpuBuffer>> outputs;
+    outputs.push_back(std::move(result.buffer));
+    return outputs;
   }
-  return ExecuteOnLocalDevices(argument_handles);
 }
 
-StatusOr<std::vector<std::unique_ptr<PyTpuBuffer>>>
+StatusOr<std::vector<std::vector<std::unique_ptr<PyTpuBuffer>>>>
 PyTpuExecutable::ExecuteOnLocalDevices(
     absl::Span<const std::vector<PyTpuBuffer*>> argument_handles) {
-  tensorflow::profiler::TraceMe traceme(
-      "PyTpuExecutable::ExecuteOnLocalDevices");
+  tsl::profiler::TraceMe traceme("PyTpuExecutable::ExecuteOnLocalDevices");
 
   const int num_local_devices = local_devices_.size();
 
   if (argument_handles.size() != num_local_devices) {
     return InvalidArgument(
         "Attempted to execute with %d argument lists when local device "
-        "count is %d (total replica count: %d, partition count: %d)",
+        "count is %d (total replica count: %d, partition count: %d).",
         argument_handles.size(), num_local_devices, num_replicas(),
         num_partitions());
   }
@@ -668,6 +691,20 @@ PyTpuExecutable::ExecuteOnLocalDevices(
   VLOG(1) << "Executing computation; num_replicas=" << num_replicas()
           << " num_partitions=" << num_partitions()
           << " num_local_devices=" << num_local_devices;
+
+  std::vector<std::unique_ptr<PyTpuBuffer>> tupled_arguments;
+  std::vector<std::vector<PyTpuBuffer*>> tupled_argument_pointers;
+  if (tuple_arguments_) {
+    tupled_arguments.resize(argument_handles.size());
+    tupled_argument_pointers.resize(argument_handles.size());
+    for (int i = 0; i < num_local_devices; ++i) {
+      TF_ASSIGN_OR_RETURN(tupled_arguments[i],
+                          PyTpuBuffer::MakeTuple(argument_handles[i], client_,
+                                                 local_devices_.at(i)));
+      tupled_argument_pointers[i] = {tupled_arguments[i].get()};
+    }
+    argument_handles = tupled_argument_pointers;
+  }
 
   absl::Mutex results_lock;
   std::vector<ExecuteResult> results(num_local_devices);
@@ -710,71 +747,67 @@ PyTpuExecutable::ExecuteOnLocalDevices(
   }
   VLOG(1) << "Replicated execution complete.";
 
-  std::vector<std::unique_ptr<PyTpuBuffer>> wrapped_results(num_local_devices);
+  std::vector<std::vector<std::unique_ptr<PyTpuBuffer>>> wrapped_results(
+      num_local_devices);
   for (int i = 0; i < num_local_devices; ++i) {
-    wrapped_results[i] = std::move(results[i].buffer);
+    if (results[i].buffer->on_host_shape().IsTuple()) {
+      TF_ASSIGN_OR_RETURN(wrapped_results[i],
+                          results[i].buffer->DestructureTuple());
+    } else {
+      wrapped_results[i].push_back(std::move(results[i].buffer));
+    }
   }
   return wrapped_results;
 }
 
-/*static*/ StatusOr<std::unique_ptr<PyTpuExecutable>>
-PyTpuExecutable::CompileForDevices(
-    const XlaComputation& computation,
-    absl::optional<std::vector<Shape>> argument_layouts,
-    const ExecutableBuildOptions* build_options,
-    std::shared_ptr<PyTpuClient> client,
-    const std::vector<std::vector<std::shared_ptr<Device>>>&
-        device_assignment) {
-  if (device_assignment.empty()) {
-    return InvalidArgument(
-        "Device assignment passed to Compile() must be non-empty.");
-  }
-  if (device_assignment[0].empty()) {
-    return InvalidArgument(
-        "Device assignment passed to Compile() must have a nonzero number of "
-        "partitions per replica; replica 0 had 0 partitions.");
-  }
-  DeviceAssignment xla_assignment(device_assignment.size(),
-                                  device_assignment[0].size());
-  for (int replica = 0; replica < device_assignment.size(); ++replica) {
-    if (device_assignment[replica].size() != device_assignment[0].size()) {
-      return InvalidArgument(
-          "Device assignment passed to Compile() has different numbers of "
-          "partitions between replicas; %d partitions for replica %d versus %d "
-          "partitions for replica 0.",
-          device_assignment[replica].size(), replica,
-          device_assignment[0].size());
-    }
-    for (int partition = 0; partition < device_assignment[replica].size();
-         ++partition) {
-      if (device_assignment[0][0]->platform_name() !=
-          device_assignment[replica][partition]->platform_name()) {
-        return InvalidArgument(
-            "Device assignment passed to Compile() must have devices of a "
-            "single kind, got %s for replica 0 partition 0 and %s for replica "
-            "%d partition %d.",
-            device_assignment[0][0]->platform_name(),
-            device_assignment[replica][partition]->platform_name(), replica,
-            partition);
-      }
-      xla_assignment(replica, partition) =
-          device_assignment[replica][partition]->id();
+StatusOr<std::vector<std::vector<std::unique_ptr<PyTpuBuffer>>>>
+PyTpuExecutable::ExecuteShardedOnLocalDevices(
+    absl::Span<const std::vector<PyTpuBuffer*>> args) {
+  std::vector<std::vector<std::unique_ptr<PyTpuBuffer>>> output_buffers;
+  TF_RET_CHECK(!args.empty());
+  int num_computations = args.front().size();
+  for (const auto& arg : args) {
+    if (arg.size() != num_computations) {
+      return xla::InvalidArgument(
+          "Expected args to execute_sharded_on_local_devices to have %d "
+          "shards, got: [%s]",
+          num_computations,
+          absl::StrJoin(
+              args, ", ",
+              [](std::string* out, const std::vector<PyTpuBuffer*>& arg) {
+                out->append(std::to_string(arg.size()));
+              }));
     }
   }
-  return Compile(computation, std::move(argument_layouts), build_options,
-                 std::move(client), xla_assignment);
+  std::vector<std::vector<PyTpuBuffer*>> arg_buffers(num_computations);
+  for (int computation = 0; computation < num_computations; ++computation) {
+    arg_buffers[computation].resize(args.size());
+    absl::c_transform(
+        args, arg_buffers[computation].begin(),
+        [&](const std::vector<PyTpuBuffer*>& arg) { return arg[computation]; });
+  }
+  TF_ASSIGN_OR_RETURN(output_buffers, ExecuteOnLocalDevices(arg_buffers));
+  int num_output_buffers = output_buffers[0].size();
+  std::vector<std::vector<std::unique_ptr<PyTpuBuffer>>> outputs;
+  outputs.resize(num_output_buffers);
+  for (int buffer_id = 0; buffer_id < num_output_buffers; ++buffer_id) {
+    outputs[buffer_id].reserve(num_computations);
+    for (int computation = 0; computation < num_computations; ++computation) {
+      outputs[buffer_id].push_back(
+          std::move(output_buffers[computation][buffer_id]));
+    }
+  }
+  return outputs;
 }
 
 /*static*/ StatusOr<std::unique_ptr<PyTpuExecutable>> PyTpuExecutable::Compile(
     const XlaComputation& computation,
-    absl::optional<std::vector<Shape>> argument_layouts,
+    std::optional<std::vector<Shape>> argument_layouts,
     const ExecutableBuildOptions* build_options,
-    std::shared_ptr<PyTpuClient> client,
-    absl::optional<DeviceAssignment> device_assignment) {
-  tensorflow::profiler::TraceMe traceme("PyTpuExecutable::Compile");
+    std::shared_ptr<PyTpuClient> client, bool tuple_arguments) {
+  tsl::profiler::TraceMe traceme("PyTpuExecutable::Compile");
 
-  VLOG(1) << "Compile: "
-          << computation.GetProgramShape().ValueOrDie().DebugString();
+  VLOG(1) << "Compile: " << computation.GetProgramShape().value().DebugString();
 
   // TODO(power) -- handle argument layouts
   // TODO(power) -- handle build options
@@ -782,21 +815,23 @@ PyTpuExecutable::CompileForDevices(
   if (build_options != nullptr) {
     options = *build_options;
   }
+  std::optional<xla::DeviceAssignment> device_assignment;
 
   // For POD use case, the device_assignment.num_replicas() may be greater than
   // the number of available local devices, where applicable the non-local
   // devices must be filtered out from participating local computation.
-  if (device_assignment) {
-    if (device_assignment->replica_count() != options.num_replicas()) {
+  if (options.has_device_assignment()) {
+    if (options.device_assignment().replica_count() != options.num_replicas()) {
       return InvalidArgument(
           "Mismatched number of replicas for device "
           "assignment and computation (%d vs %d).",
-          device_assignment->replica_count(), options.num_replicas());
-    } else if (device_assignment->computation_count() != 1) {
+          options.device_assignment().replica_count(), options.num_replicas());
+    } else if (options.device_assignment().computation_count() != 1) {
       return Unimplemented(
           "Only 1 computation per replica supported, %d requested.",
-          device_assignment->computation_count());
+          options.device_assignment().computation_count());
     }
+    device_assignment = options.device_assignment();
   } else {
     TF_ASSIGN_OR_RETURN(device_assignment,
                         client->GetDefaultDeviceAssignment(
@@ -813,7 +848,8 @@ PyTpuExecutable::CompileForDevices(
   // TODO(henrytan): in the future, we want to consider argument Layout
   // information e.g. for linearization.
   std::unique_ptr<tpu_driver::CompiledProgramHandle> compiled_program =
-      client->driver()->CompileProgram(hlo_proto, options.num_replicas(), {});
+      client->driver()->CompileProgram(hlo_proto, options.num_replicas(), {},
+                                       options.debug_options());
 
   ::xla::Shape result_layout;
   if (options.result_layout()) {
@@ -832,9 +868,23 @@ PyTpuExecutable::CompileForDevices(
   }
   VLOG(1) << "Got result shape: " << result_layout.DebugString();
 
-  return absl::make_unique<PyTpuExecutable>(
+  return std::make_unique<PyTpuExecutable>(
       std::move(compiled_program), std::move(*device_assignment),
-      std::move(client), std::move(result_layout));
+      std::move(client), std::move(result_layout), tuple_arguments);
+}
+
+/*static*/ StatusOr<std::unique_ptr<PyTpuExecutable>>
+PyTpuExecutable::CompileMlir(mlir::ModuleOp module,
+                             std::optional<std::vector<Shape>> argument_layouts,
+                             const ExecutableBuildOptions* build_options,
+                             std::shared_ptr<PyTpuClient> client,
+                             bool tuple_arguments) {
+  XlaComputation xla_computation;
+  TF_RETURN_IF_ERROR(MlirToXlaComputation(module, xla_computation,
+                                          /*use_tuple_args=*/tuple_arguments,
+                                          /*return_tuple=*/false));
+  return Compile(xla_computation, argument_layouts, build_options, client,
+                 tuple_arguments);
 }
 
 }  // namespace xla

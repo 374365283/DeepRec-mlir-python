@@ -60,7 +60,8 @@ cc_library(
     hdrs = glob([
         "include/mlir/IR/*.h",
     ]) + [
-        "include/mlir/Analysis/CallInterfaces.h",
+        #"include/mlir/Analysis/CallInterfaces.h",
+        "include/mlir/Interfaces/CallInterfaces.h",
     ],
     includes = ["include"],
     deps = [
@@ -143,7 +144,8 @@ filegroup(
     srcs = [
         "include/mlir/Dialect/AffineOps/AffineOps.td",
         "include/mlir/Dialect/AffineOps/AffineOpsBase.td",
-        "include/mlir/Transforms/LoopLikeInterface.td",
+        #"include/mlir/Transforms/LoopLikeInterface.td",
+        "include/mlir/Interfaces/LoopLikeInterface.td",
         ":OpBaseTdFiles",
     ],
 )
@@ -172,7 +174,8 @@ filegroup(
     name = "LoopOpsTdFiles",
     srcs = [
         "include/mlir/Dialect/LoopOps/LoopOps.td",
-        "include/mlir/Transforms/LoopLikeInterface.td",
+        #"include/mlir/Transforms/LoopLikeInterface.td",
+        "include/mlir/Interfaces/LoopLikeInterface.td",
         ":OpBaseTdFiles",
     ],
 )
@@ -217,7 +220,8 @@ cc_library(
 filegroup(
     name = "StdOpsTdFiles",
     srcs = [
-        "include/mlir/Analysis/CallInterfaces.td",
+        #"include/mlir/Analysis/CallInterfaces.td",
+        "include/mlir/Interfaces/CallInterfaces.td",
         "include/mlir/Dialect/StandardOps/IR/Ops.td",
         "include/mlir/IR/OpAsmInterface.td",
         ":OpBaseTdFiles",
@@ -295,7 +299,8 @@ cc_library(
         ],
     ) + [
         "include/mlir/Transforms/InliningUtils.h",
-        "include/mlir/Transforms/LoopLikeInterface.h",
+        #"include/mlir/Transforms/LoopLikeInterface.h",
+        "include/mlir/Interfaces/LoopLikeInterface.h",
     ],
     hdrs = glob([
         "include/mlir/Dialect/AffineOps/*.h",
@@ -367,7 +372,8 @@ cc_library(
         "include/mlir/Dialect/LoopOps/*.h",
         "include/mlir/Dialect/LoopOps/EDSC/*.h",
     ]) + [
-        "include/mlir/Transforms/LoopLikeInterface.h",
+        #"include/mlir/Transforms/LoopLikeInterface.h",
+        "include/mlir/Interfaces/LoopLikeInterface.h",
         "include/mlir/Transforms/SideEffectsInterface.h",
     ],
     includes = ["include"],
@@ -395,7 +401,8 @@ cc_library(
         "include/mlir/Dialect/StandardOps/IR/*.h",
         "include/mlir/Dialect/StandardOps/EDSC/*.h",
     ]) + [
-        "include/mlir/Analysis/CallInterfaces.h",
+        #"include/mlir/Analysis/CallInterfaces.h",
+        "include/mlir/Interfaces/CallInterfaces.h",
         "include/mlir/Transforms/InliningUtils.h",
     ],
     includes = ["include"],
@@ -471,9 +478,11 @@ cc_library(
 cc_library(
     name = "ParserTokenKinds",
     # strip_include_prefix does not apply to textual_hdrs.
-    hdrs = ["lib/Parser/TokenKinds.def"],
-    strip_include_prefix = "lib/Parser",
-    textual_hdrs = ["lib/Parser/TokenKinds.def"],
+    #hdrs = ["lib/Parser/TokenKinds.def"],
+    hdrs = ["lib/AsmParser/TokenKinds.def"],
+    strip_include_prefix = "lib/AsmParser",
+    #textual_hdrs = ["lib/Parser/TokenKinds.def"],
+    textual_hdrs = ["lib/AsmParser/TokenKinds.def"],
 )
 
 cc_library(
@@ -483,7 +492,8 @@ cc_library(
         "lib/Parser/*.h",
     ]),
     hdrs = [
-        "include/mlir/Parser.h",
+        #"include/mlir/Parser.h",
+        "include/mlir/Parser/Parser.h"
     ],
     includes = ["include"],
     deps = [
@@ -957,7 +967,8 @@ gentbl(
 filegroup(
     name = "SPIRVOpsTdFiles",
     srcs = [
-        "include/mlir/Analysis/CallInterfaces.td",
+        #"include/mlir/Analysis/CallInterfaces.td",
+        "include/mlir/Interfaces/CallInterfaces.td",
         ":OpBaseTdFiles",
     ] + glob(["include/mlir/Dialect/SPIRV/*.td"]),
 )
@@ -1284,15 +1295,18 @@ gentbl(
     tbl_outs = [
         (
             "-gen-op-interface-decls",
-            "include/mlir/Transforms/LoopLikeInterface.h.inc",
+            #"include/mlir/Transforms/LoopLikeInterface.h.inc",
+            "include/mlir/Interfaces/LoopLikeInterface.h.inc",
         ),
         (
             "-gen-op-interface-defs",
-            "include/mlir/Transforms/LoopLikeInterface.cpp.inc",
+            #"include/mlir/Transforms/LoopLikeInterface.cpp.inc",
+            "include/mlir/Interfaces/LoopLikeInterface.cpp.inc",
         ),
     ],
     tblgen = ":mlir-tblgen",
-    td_file = "include/mlir/Transforms/LoopLikeInterface.td",
+    #td_file = "include/mlir/Transforms/LoopLikeInterface.td",
+    td_file = "include/mlir/Interfaces/LoopLikeInterface.td",
     td_srcs = [
         ":OpBaseTdFiles",
     ],
@@ -1434,15 +1448,18 @@ gentbl(
     tbl_outs = [
         (
             "-gen-op-interface-decls",
-            "include/mlir/Analysis/CallInterfaces.h.inc",
+            #"include/mlir/Analysis/CallInterfaces.h.inc",
+            "include/mlir/Interfaces/CallInterfaces.h.inc",
         ),
         (
             "-gen-op-interface-defs",
-            "include/mlir/Analysis/CallInterfaces.cpp.inc",
+            #"include/mlir/Analysis/CallInterfaces.cpp.inc",
+            "include/mlir/Interfaces/CallInterfaces.cpp.inc",
         ),
     ],
     tblgen = ":mlir-tblgen",
-    td_file = "include/mlir/Analysis/CallInterfaces.td",
+    #td_file = "include/mlir/Analysis/CallInterfaces.td",
+    td_file = "include/mlir/Interfaces/CallInterfaces.td",
     td_srcs = [
         ":OpBaseTdFiles",
     ],
@@ -2569,8 +2586,10 @@ filegroup(
 
 exports_files(
     [
-        "include/mlir/Analysis/CallInterfaces.h",
-        "include/mlir/Analysis/CallInterfaces.td",
+        #"include/mlir/Analysis/CallInterfaces.h",
+        #"include/mlir/Analysis/CallInterfaces.td",
+        "include/mlir/Interfaces/CallInterfaces.h",
+        "include/mlir/Interfaces/CallInterfaces.td",
         "include/mlir/Dialect/LLVMIR/LLVMOpBase.td",
         "include/mlir/Dialect/StandardOps/IR/Ops.td",
         "include/mlir/IR/OpAsmInterface.td",
@@ -2583,7 +2602,8 @@ exports_files(
 exports_files(
     [
         "include/mlir/Analysis/InferTypeOpInterface.td",
-        "include/mlir/Transforms/LoopLikeInterface.td",
+        #"include/mlir/Transforms/LoopLikeInterface.td",
+        "include/mlir/Interfaces/LoopLikeInterface.td",
     ],
     visibility = ["@llvm-project//mlir:friends"],
 )

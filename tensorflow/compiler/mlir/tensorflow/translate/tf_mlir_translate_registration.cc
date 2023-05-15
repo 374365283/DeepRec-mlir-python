@@ -18,17 +18,20 @@ limitations under the License.
 // command-line option header is pulled in.
 
 #include <memory>
+#include <utility>
 
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
-#include "mlir/IR/Module.h"  // TF:llvm-project
-#include "mlir/Translation.h"  // TF:llvm-project
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
+#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
+#include "mlir/Tools/mlir-translate/Translation.h"  // from @llvm-project
+#include "tensorflow/compiler/mlir/tensorflow/dialect_registration.h"
 #include "tensorflow/compiler/mlir/tensorflow/translate/export_graphdef.h"
 #include "tensorflow/compiler/mlir/tensorflow/translate/mlir_roundtrip_flags.h"
 #include "tensorflow/compiler/mlir/tensorflow/translate/tf_mlir_translate.h"
 #include "tensorflow/compiler/mlir/tensorflow/translate/tf_mlir_translate_cl.h"
+#include "tensorflow/compiler/xla/stream_executor/lib/statusor.h"
 #include "tensorflow/core/framework/graph.pb.h"
-#include "tensorflow/stream_executor/lib/statusor.h"
 
 namespace mlir {
 using stream_executor::port::Status;
@@ -40,27 +43,34 @@ inline absl::string_view StringRefToView(llvm::StringRef ref) {
 }
 }  // namespace
 
-static OwningModuleRef GraphdefToMlirTranslateFunction(llvm::StringRef input,
-                                                       MLIRContext* context) {
-  return tensorflow::GraphdefToMlirTranslateFunction(
+static OwningOpRef<mlir::ModuleOp> GraphdefToMlirTranslateFunction(
+    llvm::StringRef input, MLIRContext* context) {
+  auto module_or = tensorflow::GraphdefToMlirTranslateFunction(
       input, debug_info_file, input_arrays, input_dtypes, input_shapes,
       output_arrays, control_output_arrays, prune_unused_nodes,
-      convert_legacy_fed_inputs, graph_as_function, upgrade_legacy, context);
+      convert_legacy_fed_inputs, graph_as_function, upgrade_legacy,
+      enable_shape_inference, unconditionally_use_set_output_shapes, context);
+  if (!module_or.status().ok()) return nullptr;
+  return std::move(module_or).value();
 }
 
 static TranslateToMLIRRegistration GraphdefToMlirTranslate(
-    "graphdef-to-mlir", GraphdefToMlirTranslateFunction);
+    "graphdef-to-mlir", "graphdef-to-mlir", GraphdefToMlirTranslateFunction);
 
-static OwningModuleRef GraphdefToSplattedMlirTranslateFunction(
+static OwningOpRef<mlir::ModuleOp> GraphdefToSplattedMlirTranslateFunction(
     llvm::StringRef input, MLIRContext* context) {
-  return tensorflow::GraphdefToSplattedMlirTranslateFunction(
+  auto module_or = tensorflow::GraphdefToSplattedMlirTranslateFunction(
       input, debug_info_file, input_arrays, input_dtypes, input_shapes,
       output_arrays, control_output_arrays, prune_unused_nodes,
-      convert_legacy_fed_inputs, graph_as_function, upgrade_legacy, context);
+      convert_legacy_fed_inputs, graph_as_function, upgrade_legacy,
+      enable_shape_inference, unconditionally_use_set_output_shapes, context);
+  if (!module_or.status().ok()) return nullptr;
+  return std::move(module_or).value();
 }
 
 static TranslateToMLIRRegistration GraphdefToSplattedMlirTranslate(
-    "graphdef-to-splatted-mlir", GraphdefToSplattedMlirTranslateFunction);
+    "graphdef-to-splatted-mlir", "graphdef-to-splatted-mlir",
+    GraphdefToSplattedMlirTranslateFunction);
 
 static LogicalResult MlirToGraphdefTranslateFunction(
     ModuleOp module, llvm::raw_ostream& output) {
@@ -68,7 +78,7 @@ static LogicalResult MlirToGraphdefTranslateFunction(
 
   // TODO(fengliuai): Add exporter flags.
   tensorflow::GraphExportConfig confs;
-  confs.graph_as_function = graph_as_function;
+  confs.export_entry_func_to_flib = export_entry_func_to_flib;
   StatusOr<std::unique_ptr<tensorflow::GraphDef>> graphdef_or(
       tensorflow::ConvertMlirToGraphdef(module, confs));
   if (!graphdef_or.status().ok()) {
@@ -76,11 +86,14 @@ static LogicalResult MlirToGraphdefTranslateFunction(
     return mlir::failure();
   }
 
-  output << graphdef_or.ValueOrDie()->DebugString();
+  output << graphdef_or.value()->DebugString();
   return success();
 }
 
 static TranslateFromMLIRRegistration mlir_to_graphdef_translate(
-    "mlir-to-graphdef", MlirToGraphdefTranslateFunction);
+    "mlir-to-graphdef", "mlir-to-graphdef", MlirToGraphdefTranslateFunction,
+    [](DialectRegistry& registry) {
+      mlir::RegisterAllTensorFlowDialects(registry);
+    });
 
 }  // namespace mlir

@@ -29,12 +29,12 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/cpu/cpu_executable.h"
 #include "tensorflow/compiler/xla/service/platform_util.h"
 #include "tensorflow/compiler/xla/shape_util.h"
+#include "tensorflow/compiler/xla/stream_executor/platform.h"
 #include "tensorflow/compiler/xla/xla_data.pb.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/types.h"
-#include "tensorflow/stream_executor/platform.h"
 
 namespace tensorflow {
 
@@ -42,16 +42,16 @@ namespace {
 constexpr char kHostPlatform[] = "Host";
 
 // Returns the index of the result in the temp buffers.
-xla::StatusOr<size_t> ComputeResultIndex(
+StatusOr<size_t> ComputeResultIndex(
     const xla::BufferAssignment& buffer_assignment) {
   TF_ASSIGN_OR_RETURN(const xla::BufferAllocation::Slice result_slice,
                       buffer_assignment.GetUniqueTopLevelOutputSlice());
   return result_slice.index();
 }
 
-// Collect names from `entries`, where T is one of tf2xla::{Feed,Fetch}. We hold
-// the actual strings in nonempty_names, and hold arrays of pointers in
-// name_ptrs, terminated by a nullptr entry.
+// Collect names from `entries`, where T is one of
+// tf2xla::{Feed,Fetch,Variable}. We hold the actual strings in nonempty_names,
+// and hold arrays of pointers in name_ptrs, terminated by a nullptr entry.
 template <typename T>
 void CollectNames(const T& entries, std::vector<string>* nonempty_names,
                   std::vector<const char*>* name_ptrs) {
@@ -80,7 +80,7 @@ void CollectNames(const T& entries, std::vector<string>* nonempty_names,
 
 }  // namespace
 
-/*static*/ xla::StatusOr<std::unique_ptr<XlaJitCompiledCpuFunction>>
+/*static*/ StatusOr<std::unique_ptr<XlaJitCompiledCpuFunction>>
 XlaJitCompiledCpuFunction::Compile(
     const GraphDef& graph_def, const tf2xla::Config& config,
     const xla::ExecutableBuildOptions& build_options) {
@@ -143,7 +143,7 @@ XlaJitCompiledCpuFunction::Compile(
   jit->buffer_infos_ = std::move(buffer_infos);
   jit->arg_index_table_ = std::move(arg_index_table);
   jit->program_shape_ =
-      absl::make_unique<xla::ProgramShapeProto>(program_shape->ToProto());
+      std::make_unique<xla::ProgramShapeProto>(program_shape->ToProto());
   XlaCompiledCpuFunction::set_static_data_raw_function(&jit->static_data_,
                                                        raw_function);
   XlaCompiledCpuFunction::set_static_data_buffer_infos(
@@ -154,14 +154,28 @@ XlaJitCompiledCpuFunction::Compile(
       &jit->static_data_, jit->arg_index_table_.data());
   XlaCompiledCpuFunction::set_static_data_num_args(
       &jit->static_data_, jit->arg_index_table_.size());
+  XlaCompiledCpuFunction::set_static_data_num_variables(&jit->static_data_,
+                                                        config.variable_size());
   XlaCompiledCpuFunction::set_static_data_result_index(&jit->static_data_,
                                                        result_index);
   // Optional metadata is collected and set below.
   CollectNames(config.feed(), &jit->nonempty_arg_names_, &jit->arg_names_);
+
+  auto variable_copy = config.variable();
+  for (auto& var : variable_copy) {
+    if (var.name().empty()) {
+      var.set_name(var.node_name());
+    }
+  }
+  CollectNames(variable_copy, &jit->nonempty_variable_names_,
+               &jit->variable_names_);
+
   CollectNames(config.fetch(), &jit->nonempty_result_names_,
                &jit->result_names_);
   XlaCompiledCpuFunction::set_static_data_arg_names(&jit->static_data_,
                                                     jit->arg_names_.data());
+  XlaCompiledCpuFunction::set_static_data_variable_names(
+      &jit->static_data_, jit->variable_names_.data());
   XlaCompiledCpuFunction::set_static_data_result_names(
       &jit->static_data_, jit->result_names_.data());
   XlaCompiledCpuFunction::set_static_data_program_shape(

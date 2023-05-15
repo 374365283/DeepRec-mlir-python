@@ -56,14 +56,16 @@ void XlaAssignVariableOp::Compute(OpKernelContext* context) {
                                 *ptr = new Var(dtype_);
                                 *(*ptr)->tensor() = value;
                                 (*ptr)->is_initialized = true;
-                                return Status::OK();
+                                return OkStatus();
                               }));
   mutex_lock ml(*variable->mu());
-  OP_REQUIRES(context, variable->tensor()->dtype() == dtype_,
-              errors::InvalidArgument(
-                  "Trying to assign variable with wrong dtype. Expected ",
-                  DataTypeString(variable->tensor()->dtype()), " got ",
-                  DataTypeString(dtype_)));
+  OP_REQUIRES(
+      context,
+      !variable->is_initialized || variable->tensor()->dtype() == dtype_,
+      errors::InvalidArgument(
+          "Trying to assign variable with wrong dtype. Expected ",
+          DataTypeString(variable->tensor()->dtype()), " got ",
+          DataTypeString(dtype_)));
   variable->is_initialized = true;
   *variable->tensor() = value;
 }

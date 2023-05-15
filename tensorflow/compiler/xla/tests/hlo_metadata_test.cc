@@ -22,6 +22,8 @@ limitations under the License.
 namespace xla {
 namespace {
 
+using ::testing::StrEq;
+
 class HloMetadataTest : public LocalClientTestBase {
  protected:
   HloMetadataTest() {
@@ -47,7 +49,7 @@ TEST_F(HloMetadataTest, MetadataPropagation) {
   Shape argument_layout = ShapeUtil::MakeShape(F32, {});
   TF_ASSERT_OK_AND_ASSIGN(
       auto executables,
-      local_client_->Compile(builder.Build().ValueOrDie(),
+      local_client_->Compile(builder.Build().value(),
                              {&argument_layout, &argument_layout},
                              ExecutableBuildOptions()));
 
@@ -56,8 +58,9 @@ TEST_F(HloMetadataTest, MetadataPropagation) {
                          ->module()
                          .entry_computation()
                          ->root_instruction();
-  EXPECT_EQ("add", instruction->metadata().op_type());
-  EXPECT_EQ("my_sum_op", instruction->metadata().op_name());
+  EXPECT_THAT(instruction->metadata().op_type(), StrEq("add"));
+  EXPECT_THAT(instruction->metadata().op_name(), StrEq("my_sum_op"));
+  EXPECT_NE(instruction->metadata().logical_creation_pass_id(), 0);
 }
 
 TEST_F(HloMetadataTest, MetadataClearing) {
@@ -70,7 +73,7 @@ TEST_F(HloMetadataTest, MetadataClearing) {
   Shape argument_layout = ShapeUtil::MakeShape(F32, {});
   TF_ASSERT_OK_AND_ASSIGN(
       auto executables,
-      local_client_->Compile(builder.Build().ValueOrDie(),
+      local_client_->Compile(builder.Build().value(),
                              {&argument_layout, &argument_layout},
                              ExecutableBuildOptions()));
 
@@ -79,9 +82,8 @@ TEST_F(HloMetadataTest, MetadataClearing) {
                          ->module()
                          .entry_computation()
                          ->root_instruction();
-  // We expect these to be empty (no metadata set).
-  EXPECT_EQ("", instruction->metadata().op_type());
-  EXPECT_EQ("", instruction->metadata().op_name());
+  EXPECT_THAT(instruction->metadata().op_type(), StrEq(""));
+  EXPECT_THAT(instruction->metadata().op_name(), StrEq(""));
 }
 
 }  // namespace

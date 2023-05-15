@@ -25,45 +25,42 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/hlo_execution_profile.h"
 #include "tensorflow/compiler/xla/service/hlo_module.h"
 #include "tensorflow/compiler/xla/service/hlo_module_config.h"
+#include "tensorflow/compiler/xla/service/interpreter/executable_base.h"
 #include "tensorflow/compiler/xla/service/service_executable_run_options.h"
 #include "tensorflow/compiler/xla/service/shaped_buffer.h"
 #include "tensorflow/compiler/xla/statusor.h"
+#include "tensorflow/compiler/xla/stream_executor/stream_executor.h"
 #include "tensorflow/compiler/xla/types.h"
 #include "tensorflow/compiler/xla/xla_data.pb.h"
-#include "tensorflow/core/platform/macros.h"
-#include "tensorflow/core/platform/mutex.h"
-#include "tensorflow/core/platform/stream_executor_no_cuda.h"
-#include "tensorflow/core/platform/types.h"
 
 namespace xla {
 namespace interpreter {
 
 // Responsible for running a HLO graph through the HloEvaluator and output
 // buffer allocation. Refer to interpreter/README.md for more.
-class InterpreterExecutable : public Executable {
+class InterpreterExecutable : public InterpreterExecutableBase {
  public:
   InterpreterExecutable(
       std::unique_ptr<HloModule> hlo_module,
       std::unique_ptr<HloEvaluator> evaluator,
-      absl::optional<DynamicDimensionInference> dynamic_dymension_inference);
-  ~InterpreterExecutable() override;
+      std::optional<DynamicDimensionInference> dynamic_dymension_inference);
 
-  StatusOr<ExecutionOutput> ExecuteAsyncOnStream(
-      const ServiceExecutableRunOptions* run_options,
-      std::vector<ShapeTree<MaybeOwningDeviceMemory>> arguments,
-      HloExecutionProfile* hlo_execution_profile) override
-      TF_LOCKS_EXCLUDED(evaluator_lock_);
-
-  static int64 ShapeSizeBytes(const Shape& shape);
+  static int64_t ShapeSizeBytes(const Shape& shape);
 
  protected:
+  StatusOr<Literal> Evaluate(const ServiceExecutableRunOptions* run_options,
+                             const HloComputation& computation,
+                             absl::Span<const Literal> arg_literals) override
+      ABSL_LOCKS_EXCLUDED(evaluator_lock_);
+
   // The interpreter interprets executables with an HloEvaluator.
-  std::unique_ptr<HloEvaluator> evaluator_ TF_PT_GUARDED_BY(evaluator_lock_);
-  mutable tensorflow::mutex evaluator_lock_;
+  std::unique_ptr<HloEvaluator> evaluator_ ABSL_PT_GUARDED_BY(evaluator_lock_);
+  mutable absl::Mutex evaluator_lock_;
 
  private:
-  absl::optional<DynamicDimensionInference> dynamic_dimension_inference_;
-  TF_DISALLOW_COPY_AND_ASSIGN(InterpreterExecutable);
+  std::optional<DynamicDimensionInference> dynamic_dimension_inference_;
+  InterpreterExecutable(const InterpreterExecutable&) = delete;
+  InterpreterExecutable& operator=(const InterpreterExecutable&) = delete;
 };
 
 }  // namespace interpreter

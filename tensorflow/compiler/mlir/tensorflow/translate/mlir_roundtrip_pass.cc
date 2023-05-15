@@ -15,28 +15,31 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/tensorflow/translate/mlir_roundtrip_pass.h"
 
-#include "mlir/Analysis/Verifier.h"  // TF:llvm-project
-#include "mlir/IR/MLIRContext.h"  // TF:llvm-project
-#include "mlir/IR/Module.h"  // TF:llvm-project
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
+#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
+#include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "mlir/IR/Verifier.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/translate/export_graphdef.h"
 #include "tensorflow/compiler/mlir/tensorflow/translate/import_model.h"
 #include "tensorflow/compiler/mlir/tensorflow/translate/mlir_roundtrip_flags.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/error_util.h"
 #include "tensorflow/compiler/xla/status_macros.h"
-#include "tensorflow/core/common_runtime/metrics.h"
-#include "tensorflow/core/graph/graph_constructor.h"
+#include "tensorflow/compiler/xla/stream_executor/lib/statusor.h"
+#include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/protobuf/graph_debug_info.pb.h"
 
 namespace tensorflow {
 
 using mlir::MLIRContext;
 
-static StatusOr<mlir::OwningModuleRef> Import(
-    const GraphOptimizationPassOptions& options, const Graph& graph,
-    MLIRContext* context) {
+static stream_executor::port::StatusOr<mlir::OwningOpRef<mlir::ModuleOp>>
+Import(const GraphOptimizationPassOptions& options, const Graph& graph,
+       MLIRContext* context) {
   // TODO(fengliuai): get debug info at runtime.
   GraphDebugInfo debug_info;
   GraphImportConfig specs;
+  specs.enable_shape_inference = options.shape_inference_on_tfe_dialect_import;
+
   TF_ASSIGN_OR_RETURN(
       auto module,
       ConvertGraphToMlir(graph, debug_info, *options.flib_def, specs, context));
@@ -48,7 +51,7 @@ static StatusOr<mlir::OwningModuleRef> Import(
   return module;
 }
 
-static Status Export(mlir::OwningModuleRef module,
+static Status Export(mlir::OwningOpRef<mlir::ModuleOp> module,
                      const GraphOptimizationPassOptions& options,
                      std::unique_ptr<Graph>* graph) {
   GraphExportConfig confs;
@@ -71,17 +74,7 @@ Status MlirRoundtripPass::Run(const GraphOptimizationPassOptions& options) {
     // TODO(jpienaar): Roundtrip results in different failures, investigate.
     TF_RETURN_IF_ERROR(Import(options, *it.second, &context).status());
   }
-  return Status::OK();
-}
-
-Status MlirImportPass::Run(const GraphOptimizationPassOptions& options) {
-  MLIRContext context;
-  if (options.graph) {
-    if (!Import(options, **options.graph, &context).ok()) {
-      metrics::IncrementMLIRImportFailureCount();
-    }
-  }
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace tensorflow

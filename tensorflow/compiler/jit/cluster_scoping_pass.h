@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_COMPILER_JIT_XLA_CLUSTER_SCOPING_PASS_H_
-#define TENSORFLOW_COMPILER_JIT_XLA_CLUSTER_SCOPING_PASS_H_
+#ifndef TENSORFLOW_COMPILER_JIT_CLUSTER_SCOPING_PASS_H_
+#define TENSORFLOW_COMPILER_JIT_CLUSTER_SCOPING_PASS_H_
 
 #include "tensorflow/core/common_runtime/optimization_registry.h"
 
@@ -35,4 +35,4 @@ class ClusterScopingPass : public GraphOptimizationPass {
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_COMPILER_JIT_XLA_CLUSTER_SCOPING_PASS_H_
+#endif  // TENSORFLOW_COMPILER_JIT_CLUSTER_SCOPING_PASS_H_

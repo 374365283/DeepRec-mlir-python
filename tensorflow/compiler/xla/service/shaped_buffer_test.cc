@@ -15,14 +15,16 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/service/shaped_buffer.h"
 
-#include "absl/memory/memory.h"
+#include <memory>
+#include <utility>
+
 #include "tensorflow/compiler/xla/service/platform_util.h"
 #include "tensorflow/compiler/xla/shape_util.h"
+#include "tensorflow/compiler/xla/stream_executor/device_memory_allocator.h"
+#include "tensorflow/compiler/xla/stream_executor/stream_executor.h"
 #include "tensorflow/compiler/xla/test.h"
-#include "tensorflow/core/platform/stream_executor_no_cuda.h"
-#include "tensorflow/core/platform/test_benchmark.h"
-#include "tensorflow/core/util/ptr_util.h"
-#include "tensorflow/stream_executor/device_memory_allocator.h"
+#include "tensorflow/tsl/platform/test_benchmark.h"
+#include "tensorflow/tsl/util/ptr_util.h"
 
 namespace xla {
 namespace {
@@ -35,7 +37,7 @@ TEST(ShapedBufferTest, ScopedShapeBufferAsShapedBufferB71629047) {
   xla::se::StreamExecutorMemoryAllocator allocator(platform, executors);
   const xla::Shape shape = xla::ShapeUtil::MakeShape(xla::F32, {});
   const int kDeviceOrdinal = 0;
-  auto scoped_buffer = absl::make_unique<xla::ScopedShapedBuffer>(
+  auto scoped_buffer = std::make_unique<xla::ScopedShapedBuffer>(
       shape, shape, &allocator, kDeviceOrdinal);
   std::unique_ptr<xla::ShapedBuffer> buffer = std::move(scoped_buffer);
   buffer = nullptr;
@@ -44,8 +46,7 @@ TEST(ShapedBufferTest, ScopedShapeBufferAsShapedBufferB71629047) {
 class TestAllocator : public se::DeviceMemoryAllocator {
  public:
   TestAllocator()
-      : se::DeviceMemoryAllocator(
-            PlatformUtil::GetDefaultPlatform().ValueOrDie()) {}
+      : se::DeviceMemoryAllocator(PlatformUtil::GetDefaultPlatform().value()) {}
 
   ~TestAllocator() override {
     if (!allocations_.empty()) {
@@ -56,9 +57,9 @@ class TestAllocator : public se::DeviceMemoryAllocator {
   // Pull in two-arg overload of Allocate.
   using se::DeviceMemoryAllocator::Allocate;
 
-  StatusOr<se::OwningDeviceMemory> Allocate(int device_ordinal, uint64 size,
+  StatusOr<se::OwningDeviceMemory> Allocate(int device_ordinal, uint64_t size,
                                             bool /*retry_on_failure*/,
-                                            int64 /*memory_space*/) override {
+                                            int64_t /*memory_space*/) override {
     // By contract, we must return null if size == 0.
     if (size == 0) {
       return se::OwningDeviceMemory();
@@ -71,7 +72,7 @@ class TestAllocator : public se::DeviceMemoryAllocator {
 
   Status Deallocate(int device_ordinal, se::DeviceMemoryBase mem) override {
     if (mem.is_null()) {
-      return Status::OK();
+      return OkStatus();
     }
 
     auto it = allocations_.find({device_ordinal, mem.opaque()});
@@ -81,7 +82,7 @@ class TestAllocator : public se::DeviceMemoryAllocator {
       free(mem.opaque());
       allocations_.erase(it);
     }
-    return Status::OK();
+    return OkStatus();
   }
 
   bool AllowsAsynchronousDeallocation() const override { return false; }
@@ -91,21 +92,19 @@ class TestAllocator : public se::DeviceMemoryAllocator {
   }
 
  private:
-  std::set<std::pair</*device_ordinal*/ int64, void*>> allocations_;
+  std::set<std::pair</*device_ordinal*/ int64_t, void*>> allocations_;
 };
 
 TEST(ScopedShapedBufferTest, TestMoveAssignmentOperator) {
   Shape s = ShapeUtil::MakeShape(F32, {1});
   TestAllocator allocator;
-  ScopedShapedBuffer sb1(s, s, &allocator, /*device_ordinal=*/0);
-  sb1.set_buffer(
-      allocator.Allocate(/*device_ordinal=*/0, /*size=*/42).ValueOrDie(),
-      /*index=*/{});
+  ScopedShapedBuffer sb1(s, &allocator, /*device_ordinal=*/0);
+  sb1.set_buffer(allocator.Allocate(/*device_ordinal=*/0, /*size=*/42).value(),
+                 /*index=*/{});
 
-  ScopedShapedBuffer sb2(s, s, &allocator, /*device_ordinal=*/1);
-  sb2.set_buffer(
-      allocator.Allocate(/*device_ordinal=*/1, /*size=*/10).ValueOrDie(),
-      /*index=*/{});
+  ScopedShapedBuffer sb2(s, &allocator, /*device_ordinal=*/1);
+  sb2.set_buffer(allocator.Allocate(/*device_ordinal=*/1, /*size=*/10).value(),
+                 /*index=*/{});
 
   sb1 = std::move(sb2);
 
@@ -119,7 +118,7 @@ TEST(ScopedShapedBufferTest, TestTakeSubTree) {
   s = xla::ShapeUtil::MakeTupleShape(std::vector<xla::Shape>(2, s));
   s = xla::ShapeUtil::MakeTupleShape(std::vector<xla::Shape>(3, s));
 
-  ScopedShapedBuffer sb(s, s, &allocator, /*device_ordinal=*/0);
+  ScopedShapedBuffer sb(s, &allocator, /*device_ordinal=*/0);
   sb.buffers().ForEachMutableElement(
       [&](const xla::ShapeIndex& index, se::DeviceMemoryBase* buffer) {
         TF_ASSERT_OK_AND_ASSIGN(
@@ -141,14 +140,15 @@ TEST(ScopedShapedBufferTest, TestTakeSubTree) {
     }
     EXPECT_TRUE(buffers.find(orig_index)->second.IsSameAs(buffer));
   });
-  sb.buffers().ForEachElement(
-      [&](const xla::ShapeIndex& index, const se::DeviceMemoryBase& buffer) {
-        if (ShapeIndexView(index).StartsWith(subtree_index)) {
-          EXPECT_TRUE(buffer.is_null());
-        } else {
-          EXPECT_TRUE(buffers.find(index)->second.IsSameAs(buffer));
-        }
-      });
+  sb.buffers().ForEachElement([&](const xla::ShapeIndex& index,
+                                  const se::DeviceMemoryBase& buffer) {
+    if ((index.size() >= subtree_index.size()) &&
+        ShapeIndexView(index).first(subtree_index.size()) == subtree_index) {
+      EXPECT_TRUE(buffer.is_null());
+    } else {
+      EXPECT_TRUE(buffers.find(index)->second.IsSameAs(buffer));
+    }
+  });
 }
 
 TEST(ScopedShapedBufferTest, TestSubShapeTree) {
@@ -156,8 +156,7 @@ TEST(ScopedShapedBufferTest, TestSubShapeTree) {
   Shape tuple_shape =
       xla::ShapeUtil::MakeTupleShape({array_shape, array_shape});
   TestAllocator allocator;
-  ScopedShapedBuffer sb(tuple_shape, tuple_shape, &allocator,
-                        /*device_ordinal=*/0);
+  ScopedShapedBuffer sb(tuple_shape, &allocator, /*device_ordinal=*/0);
   sb.buffers().ForEachMutableElement(
       [&](const xla::ShapeIndex& index, se::DeviceMemoryBase* buffer) {
         TF_ASSERT_OK_AND_ASSIGN(
@@ -167,30 +166,30 @@ TEST(ScopedShapedBufferTest, TestSubShapeTree) {
       });
   auto ssb_statusor = sb.SubShapedBuffer({1});
   ASSERT_TRUE(ssb_statusor.ok());
-  auto ssb = ssb_statusor.ConsumeValueOrDie();
+  auto ssb = std::move(ssb_statusor).value();
   EXPECT_EQ(ssb.on_host_shape(), array_shape);
   EXPECT_EQ(ssb.on_device_shape(), array_shape);
 }
 
 // Test TakeSubTree with different depths (depth of ShapeTree) and fan-outs
 // (cardinality of each non-leaf node's children).
-void BM_TakeSubTree(int iters, int depth, int fan_out) {
-  tensorflow::testing::StopTiming();
+void BM_TakeSubTree(::testing::benchmark::State& state) {
+  const int depth = state.range(0);
+  const int fan_out = state.range(1);
+
   TestAllocator allocator;
   xla::Shape shape = xla::ShapeUtil::MakeShape(xla::F32, {32, 64, 128});
   for (int i = 0; i < depth; ++i) {
     std::vector<xla::Shape> shapes(fan_out, shape);
     shape = xla::ShapeUtil::MakeTupleShape(shapes);
   }
-  xla::ScopedShapedBuffer shaped_buffer(shape, shape, /*allocator=*/&allocator,
+  xla::ScopedShapedBuffer shaped_buffer(shape, /*allocator=*/&allocator,
                                         /*device_ordinal=*/0);
-  tensorflow::testing::StartTiming();
-  for (int i = 0; i < iters; ++i) {
+  for (auto s : state) {
     // Extract a buffer from approximately the middle of the first level of the
     // tree.
     (void)shaped_buffer.TakeSubTree(/*index=*/{fan_out / 2}).release();
   }
-  tensorflow::testing::StopTiming();
 }
 
 BENCHMARK(BM_TakeSubTree)

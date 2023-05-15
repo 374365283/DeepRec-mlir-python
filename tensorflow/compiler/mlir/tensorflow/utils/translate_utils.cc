@@ -15,8 +15,8 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/tensorflow/utils/translate_utils.h"
 
-#include "mlir/IR/OpDefinition.h"  // TF:llvm-project
-#include "tensorflow/core/lib/core/errors.h"
+#include "mlir/IR/OpDefinition.h"  // from @llvm-project
+#include "tensorflow/core/platform/errors.h"
 
 namespace tensorflow {
 
@@ -29,32 +29,36 @@ void PopulateTfVersions(mlir::ModuleOp module, const VersionDef& versions) {
   auto bad_consumers = b.getNamedAttr(
       "bad_consumers",
       b.getI32ArrayAttr(llvm::ArrayRef<int32_t>(
-          versions.bad_consumers().begin(), versions.bad_consumers().end())));
-  module.setAttr("tf.versions",
-                 b.getDictionaryAttr(llvm::ArrayRef<mlir::NamedAttribute>(
-                     {producer, min_consumer, bad_consumers})));
+          versions.bad_consumers().data(),
+          versions.bad_consumers().data() + versions.bad_consumers().size())));
+  module->setAttr("tf.versions",
+                  b.getDictionaryAttr(llvm::ArrayRef<mlir::NamedAttribute>(
+                      {producer, min_consumer, bad_consumers})));
 }
 
 mlir::LogicalResult ExtractTfVersions(mlir::ModuleOp module,
                                       VersionDef* versions) {
   versions->Clear();
-  auto version_attr = module.getAttrOfType<mlir::DictionaryAttr>("tf.versions");
+  auto version_attr =
+      module->getAttrOfType<mlir::DictionaryAttr>("tf.versions");
   if (!version_attr) return mlir::failure();
 
-  auto producer = version_attr.get("producer").dyn_cast<mlir::IntegerAttr>();
+  auto producer =
+      version_attr.get("producer").dyn_cast_or_null<mlir::IntegerAttr>();
   if (!producer) return mlir::failure();
   versions->set_producer(producer.getInt());
 
   auto min_consumer =
-      version_attr.get("min_consumer").dyn_cast<mlir::IntegerAttr>();
-  if (!min_consumer) return mlir::failure();
-  versions->set_min_consumer(min_consumer.getInt());
+      version_attr.get("min_consumer").dyn_cast_or_null<mlir::IntegerAttr>();
+  if (min_consumer) versions->set_min_consumer(min_consumer.getInt());
 
   auto bad_consumers =
-      version_attr.get("bad_consumers").dyn_cast<mlir::ArrayAttr>();
-  if (!bad_consumers) return mlir::failure();
+      version_attr.get("bad_consumers").dyn_cast_or_null<mlir::ArrayAttr>();
+  if (!bad_consumers) return mlir::success();
+
   for (auto bad_consumer : bad_consumers) {
-    auto bad_consumer_int_attr = bad_consumer.dyn_cast<mlir::IntegerAttr>();
+    auto bad_consumer_int_attr =
+        bad_consumer.dyn_cast_or_null<mlir::IntegerAttr>();
     if (!bad_consumer_int_attr) return mlir::failure();
 
     versions->mutable_bad_consumers()->Add(bad_consumer_int_attr.getInt());
@@ -64,7 +68,7 @@ mlir::LogicalResult ExtractTfVersions(mlir::ModuleOp module,
 
 ::stream_executor::port::StatusOr<int64_t> GetTfGraphProducerVersion(
     mlir::ModuleOp module) {
-  auto versions = module.getAttrOfType<::mlir::DictionaryAttr>("tf.versions");
+  auto versions = module->getAttrOfType<::mlir::DictionaryAttr>("tf.versions");
   if (!versions) {
     return errors::Internal(
         "Missing 'tf.versions' attribute on the module, abort.\n");

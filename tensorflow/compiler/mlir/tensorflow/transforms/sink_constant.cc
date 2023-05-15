@@ -19,13 +19,12 @@ limitations under the License.
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
-#include "mlir/Pass/Pass.h"  // TF:llvm-project
-#include "mlir/Pass/PassManager.h"  // TF:llvm-project
-#include "mlir/Support/LLVM.h"  // TF:llvm-project
-#include "mlir/Transforms/Passes.h"  // TF:llvm-project
-#include "mlir/Transforms/RegionUtils.h"  // TF:llvm-project
+#include "mlir/Pass/Pass.h"  // from @llvm-project
+#include "mlir/Pass/PassManager.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
+#include "mlir/Transforms/Passes.h"  // from @llvm-project
+#include "mlir/Transforms/RegionUtils.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_device.h"
-#include "tensorflow/compiler/mlir/tensorflow/ir/tf_executor.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 #include "tensorflow/compiler/mlir/tensorflow/transforms/passes.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/error_util.h"
@@ -33,27 +32,38 @@ limitations under the License.
 #define DEBUG_TYPE "tf-executor-sink-constant"
 
 namespace mlir {
-namespace tf_executor {
+namespace TFDevice {
 
 namespace {
 using ::mlir::TF::ConstOp;
 
-class ExecutorConstantSinking
-    : public mlir::FunctionPass<ExecutorConstantSinking> {
-  void runOnFunction() override {
-    getFunction().walk([](tf_device::LaunchOp launch) {
-      LLVM_DEBUG(llvm::dbgs() << "Visit " << *launch.getOperation() << "\n");
+#define GEN_PASS_DEF_CLUSTERCONSTANTSINKINGPASS
+#include "tensorflow/compiler/mlir/tensorflow/transforms/tf_passes.h.inc"
+
+class ClusterConstantSinkingPass
+    : public impl::ClusterConstantSinkingPassBase<ClusterConstantSinkingPass> {
+ public:
+  explicit ClusterConstantSinkingPass(
+      llvm::function_ref<bool(tf_device::ClusterOp, ElementsAttr)> filter)
+      : filter_(filter) {}
+
+  void runOnOperation() override {
+    getOperation().walk([filter = filter_](tf_device::ClusterOp cluster) {
+      LLVM_DEBUG(llvm::dbgs() << "Visit " << *cluster.getOperation() << "\n");
       // For each launch op, we find the values used that come from a constant
       // defined above and sink these constants in the region body.
       // The sunk_constant map keeps a mapping from a ConstOp defined above to
       // a sunk clone of it. This allows for reusing a sunk constant with
       // multiple uses in the region.
       llvm::DenseMap<Value, TF::ConstOp> sunk_constant;
-      Region &body = launch.body();
+      Region &body = cluster.getBody();
       visitUsedValuesDefinedAbove(body, [&](OpOperand *use) {
         Value constant = use->get();
         auto const_op = dyn_cast_or_null<TF::ConstOp>(constant.getDefiningOp());
         if (!const_op) return;
+
+        // Filter constants using user provided predicate function.
+        if (filter && !filter(cluster, const_op.value())) return;
 
         // We found a constant, try to insert it in the map and re-use its
         // cloned value if any.
@@ -80,18 +90,17 @@ class ExecutorConstantSinking
       });
     });
   }
-};
 
-static mlir::PassRegistration<ExecutorConstantSinking> pass(
-    "tf-device-constant-sinking",
-    "Sink constants implicitly captured in a tf_device.launch region. This "
-    "reduces the number of arguments when outlining later.");
+ private:
+  llvm::function_ref<bool(tf_device::ClusterOp, ElementsAttr)> filter_;
+};
 
 }  // anonymous namespace
 
-std::unique_ptr<OpPassBase<FuncOp>> CreateTFExecutorConstantSinkingPass() {
-  return std::make_unique<ExecutorConstantSinking>();
+std::unique_ptr<OperationPass<func::FuncOp>> CreateClusterConstantSinkingPass(
+    llvm::function_ref<bool(tf_device::ClusterOp, ElementsAttr)> filter) {
+  return std::make_unique<ClusterConstantSinkingPass>(filter);
 }
 
-}  // namespace tf_executor
+}  // namespace TFDevice
 }  // namespace mlir

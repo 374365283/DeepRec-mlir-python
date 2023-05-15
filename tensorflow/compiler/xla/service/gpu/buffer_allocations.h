@@ -21,51 +21,29 @@ limitations under the License.
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/strings/str_format.h"
 #include "absl/types/span.h"
 #include "tensorflow/compiler/xla/service/buffer_assignment.h"
 #include "tensorflow/compiler/xla/statusor.h"
-#include "tensorflow/core/platform/stream_executor_no_cuda.h"
-#include "tensorflow/stream_executor/device_memory_allocator.h"
+#include "tensorflow/compiler/xla/stream_executor/device_memory_allocator.h"
+#include "tensorflow/compiler/xla/stream_executor/stream_executor.h"
 
 namespace xla {
 namespace gpu {
-
-namespace detail {
-inline uint64_t hash_combine(uint64_t a, uint64_t b) {
-  // Note: The magic number comes from the golden ratio
-  return a ^ (0x9E3779B97F4A7C17ull + b + (b >> 2) + (a << 6));
-}
-}  // namespace detail
 
 // A thread-compatible class that encapsulates the base addresses of the
 // allocated device buffers.
 class BufferAllocations {
  public:
-  // This inner class encapsulates methods that build a BufferAllocations from
-  // the given buffer assignment.
-  class Builder {
-   public:
-    // Registers preallocated buffers (such as parameter addresses and
-    // user-specified result buffers) to the given buffer index. The builder
-    // will skip allocating buffers for registered buffer indices.
-    void RegisterBuffer(BufferAllocation::Index index,
-                        se::DeviceMemoryBase address);
+  BufferAllocations(absl::Span<se::DeviceMemoryBase const> buffers,
+                    int device_ordinal,
+                    se::DeviceMemoryAllocator* memory_allocator)
+      : buffers_(buffers.begin(), buffers.end()),
+        device_ordinal_(device_ordinal),
+        memory_allocator_(memory_allocator) {}
 
-    // Builds a BufferAllocations object from the given buffer assignment.
-    // `memory_allocator` is what this function uses to allocate device memory.
-    // `device_ordinal` is the number of the device this function allocates
-    // memory on.
-    StatusOr<std::unique_ptr<BufferAllocations>> Build(
-        const BufferAssignment* buffer_assignment, int device_ordinal,
-        se::DeviceMemoryAllocator* memory_allocator);
-
-   private:
-    absl::flat_hash_map<BufferAllocation::Index, se::DeviceMemoryBase>
-        registered_buffers_;
-  };
-
-  ~BufferAllocations();
-
+  BufferAllocations(BufferAllocations&& other) = default;
+  BufferAllocations& operator=(BufferAllocations&& other) = default;
   BufferAllocations(const BufferAllocations&) = delete;
   BufferAllocations& operator=(const BufferAllocations&) = delete;
 
@@ -80,59 +58,37 @@ class BufferAllocations {
   se::DeviceMemoryBase GetDeviceAddress(
       BufferAllocation::Index buffer_index) const;
 
+  // Returns a mutable value for the allocation at a given `buffer_index`.
+  se::DeviceMemoryBase& GetMutableDeviceAddress(
+      BufferAllocation::Index buffer_index);
+
   // Same as above, but also adjusts the returned address for the offset and
   // size contained in the given slice.
   se::DeviceMemoryBase GetDeviceAddress(
       const BufferAllocation::Slice& buffer_slice) const;
 
-  se::DeviceMemoryBase GetTempBufferBase() const { return temp_buffer_base_; }
-
   // Tears down all buffers allocated by this object that are not in
   // `live_addresses`.
-  Status TearDown(const std::set<se::DeviceMemoryBase>& live_addresses);
+  Status TearDown(const std::set<se::DeviceMemoryBase>& live_addresses,
+                  absl::Span<const BufferAllocation> allocations);
 
-  struct KeyType {
-    std::vector<const void*> all_buffers_;
-    bool equal(const KeyType& rhs) const {
-      return all_buffers_ == rhs.all_buffers_;
+  std::string ToString() {
+    std::string out;
+    for (BufferAllocation::Index i = 0; i < buffers_.size(); ++i) {
+      const auto& buf = buffers_[i];
+      absl::StrAppendFormat(&out, "Buffer %d -> %p (%d B)", i, buf.opaque(),
+                            buf.size());
     }
-    size_t hash() const {
-      size_t result = 0;
-      for (const void* buf : all_buffers_) {
-        result = detail::hash_combine(result, std::hash<const void*>()(buf));
-      }
-      return result;
-    }
-  };
-  KeyType Key() const;
-
-  KeyType TempBufferKey() const;
+    return out;
+  }
 
  private:
-  BufferAllocations(BufferAllocation::Index buffer_count, int device_ordinal,
-                    se::DeviceMemoryAllocator* memory_allocator,
-                    const BufferAssignment* buffer_assignment)
-      : buffers_(buffer_count),
-        device_ordinal_(device_ordinal),
-        memory_allocator_(memory_allocator),
-        buffer_assignment_(buffer_assignment) {}
-
-  // Sets the device address of buffer `buffer_index`.
-  void SetBuffer(BufferAllocation::Index buffer_index,
-                 se::DeviceMemoryBase buffer);
-
   // An array of device pointers that stores the address of each buffer
   // indexed by Index. Each element can point to a temporary buffer, an
   // input buffer, or nullptr if no buffer is needed for that Index.
   std::vector<se::DeviceMemoryBase> buffers_;
-
-  // The base address of the memory block that contains all temporary buffers.
-  se::DeviceMemoryBase temp_buffer_base_;
-
   int device_ordinal_;
   se::DeviceMemoryAllocator* memory_allocator_;
-  const BufferAssignment* buffer_assignment_;
-  bool torn_down_ = false;
 };
 
 // LLVM and PTXAS don't deal well with large constants, so we only emit very
@@ -140,23 +96,8 @@ class BufferAllocations {
 // initializers in LLVM IR and are later overwritten when the PTX/CUBIN is
 // loaded.
 bool ShouldEmitLiteralInLlvmIr(const Literal& literal);
-inline bool operator==(const xla::gpu::BufferAllocations::KeyType& lhs,
-                       const xla::gpu::BufferAllocations::KeyType& rhs) {
-  return lhs.equal(rhs);
-}
 
 }  // namespace gpu
 }  // namespace xla
-
-namespace std {
-
-template <>
-struct hash<xla::gpu::BufferAllocations::KeyType> {
-  size_t operator()(const xla::gpu::BufferAllocations::KeyType& key) const {
-    return key.hash();
-  }
-};
-
-}  // namespace std
 
 #endif  // TENSORFLOW_COMPILER_XLA_SERVICE_GPU_BUFFER_ALLOCATIONS_H_
