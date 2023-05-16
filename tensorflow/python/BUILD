@@ -17,7 +17,7 @@ visibility = [
     # TODO(aselle): to pass open source test.
 ]
 
-load("//tensorflow:tensorflow.bzl", "if_mlir", "if_not_v2", "if_not_windows", "py_test", "py_tests", "tf_cc_shared_object", "tf_cuda_library", "tf_gen_op_wrapper_py", "tf_py_build_info_genrule", "tf_py_test")
+load("//tensorflow:tensorflow.bzl", "if_mlir", "if_not_v2", "if_not_windows", "py_test", "py_tests", "tf_cc_shared_object", "tf_cuda_library", "tf_gen_op_wrapper_py", "tf_py_build_info_genrule", "tf_py_build_info_genrule_default", "tf_py_test")
 load("//tensorflow:tensorflow.bzl", "tf_python_pybind_extension")
 load("//tensorflow:tensorflow.bzl", "pybind_extension")
 load("//tensorflow:tensorflow.bzl", "tf_py_wrap_cc")
@@ -197,7 +197,7 @@ py_library(
     ],
 )
 
-tf_py_build_info_genrule()
+tf_py_build_info_genrule_default()
 
 py_library(
     name = "graph_optimizer",
