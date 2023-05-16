@@ -3,42 +3,32 @@ exports_files(["LICENSE"])
 load(
     "@org_tensorflow//third_party/mkl:build_defs.bzl",
     "if_mkl",
-    "if_mkl_ml",
 )
-
 load(
     "@org_tensorflow//tensorflow:tensorflow.bzl",
     "tf_openmp_copts",
 )
-
 load(
     "@org_tensorflow//third_party/mkl_dnn:build_defs.bzl",
-    "if_mkl_open_source_only",
-    "if_mkldnn_threadpool",
+    "if_mkldnn_openmp",
 )
-
+load(
+    "@org_tensorflow//third_party/mkl:build_defs.bzl",
+    "if_mkl_ml",
+)
 load(
     "@org_tensorflow//third_party:common.bzl",
     "template_rule",
 )
 
-config_setting(
-    name = "clang_linux_x86_64",
-    values = {
-        "cpu": "k8",
-        "define": "using_clang=true",
-    },
-)
-
 _CMAKE_COMMON_LIST = {
     "#cmakedefine DNNL_GPU_RUNTIME DNNL_RUNTIME_${DNNL_GPU_RUNTIME}": "#define DNNL_GPU_RUNTIME DNNL_RUNTIME_NONE",
-    "#cmakedefine DNNL_SYCL_DPCPP": "#undef DNNL_SYCL_DPCPP",
-    "#cmakedefine DNNL_SYCL_COMPUTECPP": "#undef DNNL_SYCL_COMPUTECPP",
-    "#cmakedefine DNNL_WITH_LEVEL_ZERO": "#undef DNNL_WITH_LEVEL_ZERO",
-    "#cmakedefine DNNL_WITH_SYCL": "#undef DNNL_WITH_SYCL",
-    "#cmakedefine DNNL_SYCL_HIP": "#undef DNNL_SYCL_HIP",
-    "#cmakedefine DNNL_SYCL_CUDA": "#undef DNNL_SYCL_CUDA",
     "#cmakedefine DNNL_USE_RT_OBJECTS_IN_PRIMITIVE_CACHE": "#undef DNNL_USE_RT_OBJECTS_IN_PRIMITIVE_CACHE",
+    "#cmakedefine DNNL_WITH_SYCL": "#undef DNNL_WITH_SYCL",
+    "#cmakedefine DNNL_WITH_LEVEL_ZERO": "#undef DNNL_WITH_LEVEL_ZERO",
+    "#cmakedefine DNNL_SYCL_CUDA": "#undef DNNL_SYCL_CUDA",
+    "#cmakedefine DNNL_SYCL_HIP": "#undef DNNL_SYCL_HIP",
+    "#cmakedefine DNNL_ENABLE_STACK_CHECKER": "#undef DNNL_ENABLE_STACK_CHECKER",
     "#cmakedefine DNNL_EXPERIMENTAL": "#undef DNNL_EXPERIMENTAL",
     "#cmakedefine01 BUILD_TRAINING": "#define BUILD_TRAINING 1",
     "#cmakedefine01 BUILD_INFERENCE": "#define BUILD_INFERENCE 0",
@@ -63,11 +53,10 @@ _CMAKE_COMMON_LIST = {
     "#cmakedefine01 BUILD_SOFTMAX": "#define BUILD_SOFTMAX 0",
     "#cmakedefine01 BUILD_SUM": "#define BUILD_SUM 0",
     "#cmakedefine01 BUILD_PRIMITIVE_CPU_ISA_ALL": "#define BUILD_PRIMITIVE_CPU_ISA_ALL 1",
-    "#cmakedefine01 BUILD_SSE41":                 "#define BUILD_SSE41 0",
-    "#cmakedefine01 BUILD_AVX2":                  "#define BUILD_AVX2 0",
-    "#cmakedefine01 BUILD_AVX512":                "#define BUILD_AVX512 0",
-    "#cmakedefine01 BUILD_AMX":                   "#define BUILD_AMX 0",
-    "#cmakedefine DNNL_ENABLE_STACK_CHECKER": "#undef DNNL_ENABLE_STACK_CHECKER",
+    "#cmakedefine01 BUILD_SSE41": "#define BUILD_SSE41 0",
+    "#cmakedefine01 BUILD_AVX2": "#define BUILD_AVX2 0",
+    "#cmakedefine01 BUILD_AVX512": "#define BUILD_AVX512 0",
+    "#cmakedefine01 BUILD_AMX": "#define BUILD_AMX 0",
     "#cmakedefine01 BUILD_PRIMITIVE_GPU_ISA_ALL": "#define BUILD_PRIMITIVE_GPU_ISA_ALL 0",
     "#cmakedefine01 BUILD_GEN9": "#define BUILD_GEN9 0",
     "#cmakedefine01 BUILD_GEN11": "#define BUILD_GEN11 0",
@@ -96,8 +85,7 @@ template_rule(
     src = "include/oneapi/dnnl/dnnl_config.h.in",
     out = "include/oneapi/dnnl/dnnl_config.h",
     substitutions = select({
-        "@org_tensorflow//third_party/mkl_dnn:build_with_mkldnn_threadpool": _DNNL_RUNTIME_THREADPOOL,
-        "@org_tensorflow//third_party/mkl:build_with_mkl": _DNNL_RUNTIME_OMP,
+        "@org_tensorflow//third_party/mkl_dnn:build_with_mkldnn_openmp": _DNNL_RUNTIME_OMP,
         "//conditions:default": _DNNL_RUNTIME_THREADPOOL,
     }),
 )
@@ -128,7 +116,6 @@ _COPTS_LIST = select({
     "-UUSE_MKL",
     "-UUSE_CBLAS",
     "-DDNNL_ENABLE_MAX_CPU_ISA",
-    "-DDNNL_X64=1",
 ] + tf_openmp_copts()
 
 _INCLUDES_LIST = [
@@ -157,13 +144,15 @@ _TEXTUAL_HDRS_LIST = glob([
 # Large autogen files take too long time to compile with usual optimization
 # flags. These files just generate binary kernels and are not the hot spots,
 # so we factor them out to lower compiler optimizations in ":dnnl_autogen".
+# Using -O1 to enable optimizations to reduce stack consumption. (With -O0,
+# compiler doesn't clean up stack from temporary objects.)
 cc_library(
     name = "onednn_autogen",
     srcs = glob(["src/cpu/x64/gemm/**/*_kern_autogen*.cpp"]),
-    copts = select({
-        "@org_tensorflow//tensorflow:macos": ["-O0"],
-        "//conditions:default": ["-O1"],
-    }) + ["-U_FORTIFY_SOURCE"] + _COPTS_LIST,
+    copts = [
+        "-O1",
+        "-U_FORTIFY_SOURCE",
+    ] + _COPTS_LIST,
     includes = _INCLUDES_LIST,
     textual_hdrs = _TEXTUAL_HDRS_LIST,
     visibility = ["//visibility:public"],
@@ -178,13 +167,11 @@ cc_library(
             "src/cpu/**/*.cpp",
             "src/common/ittnotify/*.c",
             "src/cpu/jit_utils/**/*.cpp",
-            "src/cpu/x64/**/*.cpp",
         ],
         exclude = [
             "src/cpu/aarch64/**",
             "src/cpu/x64/gemm/**/*_kern_autogen.cpp",
         ],
-
     ),
     copts = _COPTS_LIST,
     includes = _INCLUDES_LIST,
@@ -195,7 +182,7 @@ cc_library(
         "@org_tensorflow//tensorflow:linux_ppc64le": ["-lrt"],
         "//conditions:default": [],
     }),
-		textual_hdrs = _TEXTUAL_HDRS_LIST,
+    textual_hdrs = _TEXTUAL_HDRS_LIST,
     visibility = ["//visibility:public"],
     deps = [":onednn_autogen"] + if_mkl_ml(
         ["@org_tensorflow//third_party/mkl:intel_binary_blob"],

@@ -34,6 +34,7 @@ load("//third_party/opencl_headers:workspace.bzl", opencl_headers = "repo")
 load("//third_party/kissfft:workspace.bzl", kissfft = "repo")
 load("//third_party/keras_applications_archive:workspace.bzl", keras_applications = "repo")
 load("//third_party/pasta:workspace.bzl", pasta = "repo")
+load("//third_party/tensorrt:workspace.bzl", tensorrt = "repo")
 
 def initialize_third_party():
     """ Load third party repositories.  See above load() statements. """
@@ -49,6 +50,7 @@ def initialize_third_party():
     nasm()
     opencl_headers()
     pasta()
+    tensorrt()
 
 # Sanitize a dependency so that it works correctly from code that includes
 # TensorFlow as a submodule.
@@ -140,14 +142,9 @@ def tf_repositories(path_prefix = "", tf_repo_name = ""):
         ],
     )
 
-    # Important: If you are upgrading MKL-DNN, then update the version numbers
-    # in third_party/mkl_dnn/mkldnn.BUILD. In addition, the new version of
-    # MKL-DNN might require upgrading MKL ML libraries also. If they need to be
-    # upgraded then update the version numbers on all three versions above
-    # (Linux, Mac, Windows).
     tf_http_archive(
-        name = "mkl_dnn",                           # Apache License 2.0
-        build_file = clean_dep("//third_party/mkl_dnn:mkldnn.BUILD"),
+        name = "mkl_dnn",
+        build_file = "//third_party/mkl_dnn:mkldnn.BUILD",
         sha256 = "a0211aeb5e7dad50b97fa5dffc1a2fe2fe732572d4164e1ee8750a2ede43fbec",
         strip_prefix = "oneDNN-0.21.3",
         urls = [
@@ -157,30 +154,25 @@ def tf_repositories(path_prefix = "", tf_repo_name = ""):
     )
 
     tf_http_archive(
-        name = "mkl_dnn_v1",                        # Apache License 2.0
-        build_file = clean_dep("//third_party/mkl_dnn:mkldnn_v1.BUILD"),
-        patch_file = [clean_dep("//third_party/mkl_dnn:oneDNN-v2.7.1-export-bf16-fp16-verbose-3.patch")],
+        name = "mkl_dnn_v1",
+        build_file = "//third_party/mkl_dnn:mkldnn_v1.BUILD",
         sha256 = "dc2b9bc851cd8d5a6c4622f7dc215bdb6b32349962875f8bf55cceed45a4c449",
         strip_prefix = "oneDNN-2.7.1",
         urls = [
-            "https://github.com/oneapi-src/oneDNN/archive/v2.7.1.tar.gz",
-            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/oneapi-src/oneDNN/archive/v2.7.1.tar.gz",
+            "https://github.com/oneapi-src/oneDNN/archive/refs/tags/v2.7.1.tar.gz",
+            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/oneapi-src/oneDNN/archive/refs/tags/v2.7.1.tar.gz",
         ],
     )
 
     tf_http_archive(
-        name = "mkl_dnn_acl_compatible",            # Apache License 2.0
-        build_file = clean_dep("//third_party/mkl_dnn:mkldnn_acl.BUILD"),
-        patch_file = [
-            "//third_party/mkl_dnn:onednn_acl_threadcap.patch", 
-            "//third_party/mkl_dnn:onednn_acl_fixed_format_kernels.patch", 
-            "//third_party/mkl_dnn:onednn_acl_depthwise_convolution.patch"
-        ],
-        sha256 = "a50993aa6265b799b040fe745e0010502f9f7103cc53a9525d59646aef006633",
-        strip_prefix = "oneDNN-2.7.3",
+        name = "mkl_dnn_acl_compatible",
+        build_file = "//third_party/mkl_dnn:mkldnn_acl.BUILD",
+        patch_file = ["//third_party/mkl_dnn:onednn_acl_threadcap.patch", "//third_party/mkl_dnn:onednn_acl_fixed_format_kernels.patch", "//third_party/mkl_dnn:onednn_acl_depthwise_convolution.patch"],
+        sha256 = "fc2b617ec8dbe907bb10853ea47c46f7acd8817bc4012748623d911aca43afbb",
+        strip_prefix = "oneDNN-2.7",
         urls = [
-            "https://github.com/oneapi-src/oneDNN/archive/v2.7.3.tar.gz",
-            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/oneapi-src/oneDNN/archive/v2.7.3.tar.gz",
+            "https://github.com/oneapi-src/oneDNN/archive/v2.7.tar.gz",
+            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/oneapi-src/oneDNN/archive/v2.7.tar.gz",
         ],
     )
 
@@ -731,14 +723,14 @@ def tf_repositories(path_prefix = "", tf_repo_name = ""):
     )
 
     tf_http_archive(
-        name = "nccl_archive",                      # BSD License
+        name = "nccl_archive",
         build_file = clean_dep("//third_party:nccl/archive.BUILD"),
         patch_file = [clean_dep("//third_party/nccl:archive.patch")],
-        sha256 = "9a7633e224982e2b60fa6b397d895d20d6b7498e3e02f46f98a5a4e187c5a44c",
-        strip_prefix = "nccl-0ceaec9cee96ae7658aa45686853286651f36384",
+        sha256 = "d5f5243200d4e40683c56f04435bfd6defa379cb4f2b8c07b0f191df0f66c3d9",
+        strip_prefix = "nccl-2.13.4-1",
         urls = [
-            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/nvidia/nccl/archive/0ceaec9cee96ae7658aa45686853286651f36384.tar.gz",
-            "https://github.com/nvidia/nccl/archive/0ceaec9cee96ae7658aa45686853286651f36384.tar.gz",
+            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/nvidia/nccl/archive/v2.13.4-1.tar.gz",
+            "https://github.com/nvidia/nccl/archive/v2.13.4-1.tar.gz",
         ],
     )
 
@@ -1055,8 +1047,10 @@ def tf_repositories(path_prefix = "", tf_repo_name = ""):
         build_file = "//third_party/cares:cares.BUILD",
         sha256 = "45d3c1fd29263ceec2afc8ff9cd06d5f8f889636eb4e80ce3cc7f0eaf7aadc6e",
         strip_prefix = "c-ares-1.14.0",
-        urls = ["https://storage.googleapis.com/mirror.tensorflow.org/github.com/c-ares.haxx.se/download/c-ares-1.14.0.tar.gz",
-                "https://c-ares.haxx.se/download/c-ares-1.14.0.tar.gz"],
+        urls = [
+            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/c-ares.haxx.se/download/c-ares-1.14.0.tar.gz",
+            "https://c-ares.haxx.se/download/c-ares-1.14.0.tar.gz"
+        ],
     )
 
     tf_http_archive(

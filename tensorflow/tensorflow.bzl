@@ -1912,6 +1912,77 @@ def _get_transitive_headers(hdrs, deps):
         transitive = [dep[CcInfo].compilation_context.headers for dep in deps],
     )
 
+# Bazel rules for building swig files.
+def _py_wrap_cc_impl(ctx):
+    srcs = ctx.files.srcs
+    if len(srcs) != 1:
+        fail("Exactly one SWIG source file label must be specified.", "srcs")
+    module_name = ctx.attr.module_name
+    src = ctx.files.srcs[0]
+    inputs = _get_transitive_headers([src] + ctx.files.swig_includes, ctx.attr.deps)
+    inputs = depset(ctx.files._swiglib, transitive = [inputs])
+    inputs = depset(ctx.files.toolchain_deps, transitive = [inputs])
+    swig_include_dirs = depset(_get_repository_roots(ctx, inputs))
+    swig_include_dirs = depset(sorted([f.dirname for f in ctx.files._swiglib]), transitive = [swig_include_dirs])
+    args = [
+        "-c++",
+        "-python",
+        "-module",
+        module_name,
+        "-o",
+        ctx.outputs.cc_out.path,
+        "-outdir",
+        ctx.outputs.py_out.dirname,
+    ]
+    args += ["-l" + f.path for f in ctx.files.swig_includes]
+    args += ["-I" + i for i in swig_include_dirs.to_list()]
+    args += [src.path]
+    outputs = [ctx.outputs.cc_out, ctx.outputs.py_out]
+    ctx.actions.run(
+        executable = ctx.executable._swig,
+        arguments = args,
+        inputs = inputs.to_list(),
+        outputs = outputs,
+        mnemonic = "PythonSwig",
+        progress_message = "SWIGing " + src.path,
+    )
+    return struct(files = depset(outputs))
+
+_py_wrap_cc = rule(
+    attrs = {
+        "srcs": attr.label_list(
+            mandatory = True,
+            allow_files = True,
+        ),
+        "swig_includes": attr.label_list(
+            allow_files = True,
+        ),
+        "deps": attr.label_list(
+            allow_files = True,
+            providers = [CcInfo],
+        ),
+        "toolchain_deps": attr.label_list(
+            allow_files = True,
+        ),
+        "module_name": attr.string(mandatory = True),
+        "py_module_name": attr.string(mandatory = True),
+        "_swig": attr.label(
+            default = Label("@swig//:swig"),
+            executable = True,
+            cfg = "host",
+        ),
+        "_swiglib": attr.label(
+            default = Label("@swig//:templates"),
+            allow_files = True,
+        ),
+    },
+    outputs = {
+        "cc_out": "%{module_name}.cc",
+        "py_out": "%{py_module_name}.py",
+    },
+    implementation = _py_wrap_cc_impl,
+)
+
 def _get_repository_roots(ctx, files):
     """Returns abnormal root directories under which files reside.
 
@@ -2278,6 +2349,120 @@ _append_init_to_versionscript = rule(
     implementation = _append_init_to_versionscript_impl,
 )
 
+def tf_py_wrap_cc(
+        name,
+        srcs,
+        swig_includes = [],
+        deps = [],
+        copts = [],
+        version_script = None,
+        **kwargs):
+    """Builds a Python extension module."""
+    module_name = name.split("/")[-1]
+
+    # Convert a rule name such as foo/bar/baz to foo/bar/_baz.so
+    # and use that as the name for the rule producing the .so file.
+    cc_library_base = "/".join(name.split("/")[:-1] + ["_" + module_name])
+
+    # TODO(b/137885063): tf_cc_shared_object needs to be cleaned up; we really
+    # shouldn't be passing a name qualified with .so here.
+    cc_library_name = cc_library_base + ".so"
+    cc_library_pyd_name = "/".join(
+        name.split("/")[:-1] + ["_" + module_name + ".pyd"],
+    )
+    extra_deps = []
+    _py_wrap_cc(
+        name = name + "_py_wrap",
+        srcs = srcs,
+        module_name = module_name,
+        py_module_name = name,
+        swig_includes = swig_includes,
+        toolchain_deps = ["@bazel_tools//tools/cpp:current_cc_toolchain"],
+        deps = deps + extra_deps,
+    )
+    if not version_script:
+        version_script = select({
+            "@local_config_cuda//cuda:darwin": clean_dep("//tensorflow:tf_exported_symbols.lds"),
+            "//conditions:default": clean_dep("//tensorflow:tf_version_script.lds"),
+        })
+    vscriptname = name + "_versionscript"
+    _append_init_to_versionscript(
+        name = vscriptname,
+        is_version_script = select({
+            "@local_config_cuda//cuda:darwin": False,
+            "//conditions:default": True,
+        }),
+        module_name = module_name,
+        template_file = version_script,
+    )
+    extra_linkopts = select({
+        "@local_config_cuda//cuda:darwin": [
+            "-Wl,-exported_symbols_list,$(location %s.lds)" % vscriptname,
+        ],
+        clean_dep("//tensorflow:windows"): [],
+        "//conditions:default": [
+            "-Wl,--version-script",
+            "$(location %s.lds)" % vscriptname,
+        ],
+    })
+    extra_deps += select({
+        "@local_config_cuda//cuda:darwin": [
+            "%s.lds" % vscriptname,
+        ],
+        clean_dep("//tensorflow:windows"): [],
+        "//conditions:default": [
+            "%s.lds" % vscriptname,
+        ],
+    })
+
+    tf_cc_shared_object(
+        name = cc_library_name,
+        srcs = [module_name + ".cc"],
+        copts = copts + if_not_windows([
+            "-Wno-self-assign",
+            "-Wno-sign-compare",
+            "-Wno-write-strings",
+        ]),
+        linkopts = extra_linkopts,
+        linkstatic = 1,
+        deps = deps + extra_deps,
+        **kwargs
+    )
+
+    # When a non-versioned .so is added as a 'src' to a bazel target, it uses
+    # -l%(so_name) instead of -l:%(so_file) during linking.  When -l%(so_name)
+    # is passed to ld, it will look for an associated file with the schema
+    # lib%(so_name).so.  Since pywrap_tensorflow is not explicitly versioned
+    # and is not prefixed with lib_, we add a rule for the creation of an .so
+    # file with the canonical lib schema (e.g. libNAME.so), so that
+    # -l%(so_name) is resolved during linking.
+    #
+    # See: https://github.com/bazelbuild/bazel/blob/7a6808260a733d50983c1adf0cf5a7493472267f/src/main/java/com/google/devtools/build/lib/rules/cpp/LibrariesToLinkCollector.java#L319
+    for pattern in SHARED_LIBRARY_NAME_PATTERNS:
+        name_os = pattern % (cc_library_base, "")
+        native.genrule(
+            name = name_os + "_rule",
+            srcs = [":" + cc_library_name],
+            outs = [name_os],
+            cmd = "cp $< $@",
+        )
+
+    native.genrule(
+        name = "gen_" + cc_library_pyd_name,
+        srcs = [":" + cc_library_name],
+        outs = [cc_library_pyd_name],
+        cmd = "cp $< $@",
+    )
+    native.py_library(
+        name = name,
+        srcs = [":" + name + ".py"],
+        srcs_version = "PY2AND3",
+        data = select({
+            clean_dep("//tensorflow:windows"): [":" + cc_library_pyd_name],
+            "//conditions:default": [":" + cc_library_name],
+        }),
+    )
+
 # This macro should only be used for pywrap_tensorflow_internal.so.
 # It was copied and refined from the original tf_py_wrap_cc_opensource rule.
 # buildozer: disable=function-docstring-args
@@ -2498,9 +2683,10 @@ def tf_py_test(
         **kwargs):
     """Create one or more python tests with extra tensorflow dependencies."""
     xla_test_true_list = []
-    if "additional_deps" in kwargs:
-        fail("Use `deps` to specify dependencies. `additional_deps` has been replaced with the standard pattern of `deps`.")
     deps = kwargs.pop("deps", [])
+    if "additional_deps" in kwargs:
+        deps = deps + kwargs.pop("additional_deps", [])
+        #fail("Use `deps` to specify dependencies. `additional_deps` has been replaced with the standard pattern of `deps`.")
 
     # xla_enable_strict_auto_jit is used to run Tensorflow unit tests with all XLA compilable
     # kernels compiled with XLA.
@@ -2588,8 +2774,8 @@ def gpu_py_test(
         **kwargs):
     if main == None:
         main = name + ".py"
-    if "additional_deps" in kwargs:
-        fail("Use `deps` to specify dependencies. `additional_deps` has been replaced with the standard pattern of `deps`.")
+    #if "additional_deps" in kwargs:
+    #    fail("Use `deps` to specify dependencies. `additional_deps` has been replaced with the standard pattern of `deps`.")
     configs = ["cpu", "gpu"]
     if "multi_gpu" in tags or "multi_and_single_gpu" in tags:
         configs = configs + ["2gpu"]
@@ -2658,6 +2844,43 @@ register_extension_info(
     label_regex_for_dep = "{extension_name}_cpu",
 )
 
+def cuda_py_tests(*args, **kwargs):
+    gpu_py_tests(*args, **kwargs)
+
+def gpu_py_tests(
+        name,
+        srcs,
+        size = "medium",
+        additional_deps = [],
+        kernels = [],
+        data = [],
+        shard_count = 1,
+        tags = [],
+        prefix = "",
+        xla_enable_strict_auto_jit = False,
+        xla_enabled = False,
+        grpc_enabled = False,
+        **kwargs):
+    # TODO(b/122522101): Don't ignore xla_enable_strict_auto_jit and enable additional
+    # XLA tests once enough compute resources are available.
+    _ignored = [xla_enable_strict_auto_jit]
+    test_tags = tags + tf_gpu_tests_tags()
+    py_tests(
+        name = name,
+        size = size,
+        srcs = srcs,
+        additional_deps = additional_deps,
+        data = data,
+        grpc_enabled = grpc_enabled,
+        kernels = kernels,
+        prefix = prefix,
+        shard_count = shard_count,
+        tags = test_tags,
+        xla_enabled = xla_enabled,
+        xla_enable_strict_auto_jit = False,
+        **kwargs
+    )
+
 def py_tests(
         name,
         srcs,
@@ -2672,8 +2895,8 @@ def py_tests(
         grpc_enabled = False,
         tfrt_enabled = False,
         **kwargs):
-    if "additional_deps" in kwargs:
-        fail("Use `deps` to specify dependencies. `additional_deps` has been replaced with the standard pattern of `deps`.")
+    #if "additional_deps" in kwargs:
+    #    fail("Use `deps` to specify dependencies. `additional_deps` has been replaced with the standard pattern of `deps`.")
     for src in srcs:
         test_name = src.split("/")[-1].split(".")[0]
         if prefix:
