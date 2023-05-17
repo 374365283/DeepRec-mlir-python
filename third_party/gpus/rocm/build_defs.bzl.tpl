@@ -38,6 +38,10 @@ def rocm_version_number():
     """Returns a list of supported GPU architectures."""
     return %{rocm_version_number}
 
+def rocm_is_configured():
+    """Returns true if ROCm was enabled during the configure process."""
+    return %{rocm_is_configured}
+
 def if_rocm_is_configured(x):
     """Tests if the ROCm was enabled during the configure process.
 
