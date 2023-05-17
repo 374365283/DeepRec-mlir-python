@@ -287,7 +287,7 @@ def if_windows(a, otherwise = []):
 
 def if_windows_cuda(a, otherwise = []):
     return select({
-        clean_dep("//tensorflow:is_cuda_enabled_and_windows"): a,
+        clean_dep("//tensorflow:with_cuda_support_windows_override"): a,
         "//conditions:default": otherwise,
     })
 
