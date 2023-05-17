@@ -91,7 +91,7 @@ load(
     "tf_opts_nortti_if_emscripten",
     "transitive_hdrs",
 )
-load("@local_config_cuda//cuda:build_defs.bzl", "cuda_library")
+
 load("//tensorflow:tensorflow.bzl", "if_nccl")
 load("//tensorflow:tensorflow.bzl", "tensorflow_opensource_extra_deps")
 
@@ -152,7 +152,7 @@ load(
     "tf_cuda_tests_tags",
     "tf_gpu_tests_tags",
 )
-load("@local_config_cuda//cuda:build_defs.bzl", "if_cuda")
+load("@local_config_cuda//cuda:build_defs.bzl", "if_cuda", "cuda_library")
 load("@local_config_tensorrt//:build_defs.bzl", "if_tensorrt")
 load("@io_bazel_rules_closure//closure:defs.bzl", "closure_proto_library")
 load(

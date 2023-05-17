@@ -71,6 +71,10 @@ two_gpu_tags = ["requires-gpu-nvidia:2", "notap", "manual", "no_pip"]
 # external project.
 workspace_root = Label("//:WORKSPACE").workspace_root or "."
 
+def tf_portable_proto_library(name, proto_deps, **kwargs):
+    _ignore = [kwargs]
+    native.cc_library(name = name, deps = proto_deps)
+    
 def clean_dep(target):
     """Returns string to 'target' in @org_tensorflow repository.
 
@@ -464,6 +468,12 @@ def tf_opts_nortti():
         "-DGOOGLE_PROTOBUF_NO_RTTI",
         "-DGOOGLE_PROTOBUF_NO_STATIC_INITIALIZER",
     ]
+
+def tfe_xla_copts():
+    return select({
+        "//tensorflow:with_xla_support": ["-DTENSORFLOW_EAGER_USE_XLA"],
+        "//conditions:default": [],
+    })
 
 def tf_opts_nortti_if_android():
     return if_android(tf_opts_nortti())
@@ -1404,6 +1414,28 @@ def tf_cc_test(
         **kwargs
     )
 
+def tf_cc_test_gpu(
+        name,
+        srcs,
+        deps,
+        linkstatic = 0,
+        tags = [],
+        data = [],
+        size = "medium",
+        suffix = "",
+        args = None):
+    tf_cc_test(
+        name,
+        srcs,
+        deps,
+        size = size,
+        args = args,
+        data = data,
+        linkstatic = linkstatic,
+        suffix = suffix,
+        tags = tags,
+    )
+
 register_extension_info(
     extension = tf_cc_test,
     label_regex_for_dep = "{extension_name}",
@@ -1613,6 +1645,17 @@ def tf_cc_test_mkl(
             args = args,
             features = disable_header_modules,
         )
+
+def tf_cc_tests_gpu(
+        srcs,
+        deps,
+        name = "",
+        linkstatic = 0,
+        tags = [],
+        size = "medium",
+        kernels = [],
+        args = None):
+    tf_cc_tests(srcs, deps, linkstatic, size = size, args = args, kernels = kernels, tags = tags)
 
 def tf_gpu_cc_tests(
         srcs,
@@ -3042,20 +3085,35 @@ def _local_genrule(**kwargs):
         **kwargs
     )
 
-def tf_version_info_genrule(name, out, compatible_with = None):
-    # TODO(gunan): Investigate making this action hermetic so we do not need
-    # to run it locally.
-    _local_genrule(
-        name = name,
-        out = out,
-        compatible_with = compatible_with,
-        exec_tool = "//tensorflow/tools/git:gen_git_source",
+#def tf_version_info_genrule(name, out, compatible_with = None):
+#    # TODO(gunan): Investigate making this action hermetic so we do not need
+#    # to run it locally.
+#    _local_genrule(
+#        name = name,
+#        out = out,
+#        compatible_with = compatible_with,
+#        exec_tool = "//tensorflow/tools/git:gen_git_source",
+#        srcs = [
+#            "@local_config_git//:gen/spec.json",
+#            "@local_config_git//:gen/head",
+#            "@local_config_git//:gen/branch_ref",
+#        ],
+#        arguments = "--generate \"$@\" --git_tag_override=${GIT_TAG_OVERRIDE:-}",
+#    )
+
+def tf_version_info_genrule():
+    native.genrule(
+        name = "version_info_gen",
         srcs = [
-            "@local_config_git//:gen/spec.json",
-            "@local_config_git//:gen/head",
-            "@local_config_git//:gen/branch_ref",
+            clean_dep("@local_config_git//:gen/spec.json"),
+            clean_dep("@local_config_git//:gen/head"),
+            clean_dep("@local_config_git//:gen/branch_ref"),
         ],
-        arguments = "--generate \"$@\" --git_tag_override=${GIT_TAG_OVERRIDE:-}",
+        outs = ["util/version_info.cc"],
+        cmd =
+            "$(location //tensorflow/tools/git:gen_git_source) --generate $(SRCS) \"$@\" --git_tag_override=$${GIT_TAG_OVERRIDE:-}",
+        local = 1,
+        tools = [clean_dep("//tensorflow/tools/git:gen_git_source")],
     )
 
 def _dict_to_kv(d):
