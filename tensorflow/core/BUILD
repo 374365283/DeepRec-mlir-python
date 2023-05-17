@@ -80,7 +80,6 @@ load(
     "tf_cc_tests",
     "tf_copts",
     "tf_cuda_library",
-    "cuda_library",
     "tf_cuda_only_cc_test",
     "tf_features_nomodules_if_android",
     "tf_features_nomodules_if_emscripten",
@@ -92,6 +91,7 @@ load(
     "tf_opts_nortti_if_emscripten",
     "transitive_hdrs",
 )
+load("@local_config_cuda//cuda:build_defs.bzl", "cuda_library")
 load("//tensorflow:tensorflow.bzl", "if_nccl")
 load("//tensorflow:tensorflow.bzl", "tensorflow_opensource_extra_deps")
 

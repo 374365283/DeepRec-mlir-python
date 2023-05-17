@@ -480,8 +480,18 @@ def tf_defines_nortti():
 def tf_defines_nortti_if_android():
     return if_android(tf_defines_nortti())
 
+def tf_opts_nortti_if_emscripten():
+    return if_emscripten([
+        "-fno-rtti",
+        "-DGOOGLE_PROTOBUF_NO_RTTI",
+        "-DGOOGLE_PROTOBUF_NO_STATIC_INITIALIZER",
+    ])
+
 def tf_features_nomodules_if_android():
     return if_android(["-use_header_modules"])
+
+def tf_features_nomodules_if_emscripten():
+    return if_emscripten(["-use_header_modules"])
 
 def tf_features_nomodules_if_mobile():
     return if_mobile(["-use_header_modules"])
