@@ -1,48 +1,40 @@
 load(":build_defs.bzl", "cuda_header_library")
-load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
-load("@bazel_skylib//lib:selects.bzl", "selects")
 
 licenses(["restricted"])  # MPL2, portions GPL v3, LGPL v3, BSD-like
 
 package(default_visibility = ["//visibility:public"])
 
-# Config setting whether TensorFlow is built with CUDA support using clang.
-#
-# TODO(b/174244321), DEPRECATED: this target will be removed when all users
-# have been converted to :is_cuda_enabled (most) or :is_cuda_compiler_clang.
-selects.config_setting_group(
-    name = "using_clang",
-    match_all = [
-        "@local_config_cuda//:is_cuda_enabled",
-        "@local_config_cuda//:is_cuda_compiler_clang",
-    ],
-)
-
-# Config setting whether TensorFlow is built with CUDA support using nvcc.
-#
-# TODO(b/174244321), DEPRECATED: this target will be removed when all users
-# have been converted to :is_cuda_enabled (most) or :is_cuda_compiler_nvcc.
-selects.config_setting_group(
+config_setting(
     name = "using_nvcc",
-    match_all = [
-        "@local_config_cuda//:is_cuda_enabled",
-        "@local_config_cuda//:is_cuda_compiler_nvcc",
-    ],
-)
-
-# Equivalent to using_clang && -c opt.
-selects.config_setting_group(
-    name = "using_clang_opt",
-    match_all = [
-        ":using_clang",
-        ":_opt",
-    ],
+    values = {
+        "define": "using_cuda_nvcc=true",
+    },
 )
 
 config_setting(
-    name = "_opt",
-    values = {"compilation_mode": "opt"},
-    visibility = ["//visibility:private"],
+    name = "using_clang",
+    values = {
+        "define": "using_cuda_clang=true",
+    },
+)
+
+# Equivalent to using_clang && -c opt.
+config_setting(
+    name = "using_clang_opt",
+    values = {
+        "define": "using_cuda_clang=true",
+        "compilation_mode": "opt",
+    },
+)
+
+config_setting(
+    name = "darwin",
+    values = {"cpu": "darwin"},
+)
+
+config_setting(
+    name = "freebsd",
+    values = {"cpu": "freebsd"},
 )
 
 # Provides CUDA headers for '#include "third_party/gpus/cuda/include/cuda.h"'
@@ -51,7 +43,7 @@ cuda_header_library(
     name = "cuda_headers",
     hdrs = [
         "cuda/cuda_config.h",
-        ":cuda-include",
+        ":cuda-include"
     ],
     include_prefix = "third_party/gpus",
     includes = [
@@ -135,12 +127,6 @@ cc_import(
 )
 
 cc_import(
-    name = "cublasLt",
-    interface_library = "cuda/lib/%{cublasLt_lib}",
-    system_provided = 1,
-)
-
-cc_import(
     name = "cusolver",
     interface_library = "cuda/lib/%{cusolver_lib}",
     system_provided = 1,
@@ -176,7 +162,6 @@ cc_library(
     name = "cuda",
     deps = [
         ":cublas",
-        ":cublasLt",
         ":cuda_headers",
         ":cudart",
         ":cudnn",
@@ -187,13 +172,13 @@ cc_library(
 
 alias(
     name = "cub_headers",
-    actual = "%{cub_actual}",
+    actual = "%{cub_actual}"
 )
 
 cuda_header_library(
     name = "cupti_headers",
     hdrs = [":cuda-extras"],
-    include_prefix = "third_party/gpus",
+    include_prefix="third_party/gpus",
     includes = ["cuda/extras/CUPTI/include/"],
     deps = [":cuda_headers"],
 )
@@ -213,19 +198,6 @@ cc_import(
 cc_library(
     name = "libdevice_root",
     data = [":cuda-nvvm"],
-)
-
-bzl_library(
-    name = "build_defs_bzl",
-    srcs = ["build_defs.bzl"],
-    deps = [
-        "@bazel_skylib//lib:selects",
-    ],
-)
-
-py_library(
-    name = "cuda_config_py",
-    srcs = ["cuda/cuda_config.py"],
 )
 
 %{copy_rules}
