@@ -72,8 +72,8 @@ tf_custom_op_py_library(
     srcs_version = "PY3",
     deps = [
         ":gen_custom_aggregator_op_wrapper",
-        "//tensorflow/python/framework",
-        "//tensorflow/python/framework:dtypes",
+        "//tensorflow/python",
+        "//tensorflow/python:dtypes",
         "//tensorflow/python/platform",
     ],
 )

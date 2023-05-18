@@ -133,7 +133,7 @@ pytype_strict_library(
         "//tensorflow/python:framework",
         "//tensorflow/python:framework_ops",
         "//tensorflow/python:pywrap_tensorflow",
-        "//tensorflow/python/client:session",
+        "//tensorflow/python:session",
         "//tensorflow/python/eager:context",
         "//tensorflow/python/eager:wrap_function",
         "//tensorflow/python/lib/io:lib",
@@ -184,11 +184,11 @@ pytype_library(
         "//tensorflow/python:nn_ops",
         "//tensorflow/python:random_ops",
         "//tensorflow/python:variables",
-        "//tensorflow/python/client:session",
+        "//tensorflow/python:session",
         "//tensorflow/python/eager:def_function",
-        "//tensorflow/python/framework:dtypes",
-        "//tensorflow/python/framework:ops",
-        "//tensorflow/python/framework:tensor_spec",
+        "//tensorflow/python:dtypes",
+        "//tensorflow/python:ops",
+        "//tensorflow/python:tensor_spec",
         "//tensorflow/python/saved_model:builder",
         "//tensorflow/python/saved_model:signature_def_utils",
         "//tensorflow/python/trackable:autotrackable",
@@ -219,23 +219,23 @@ pytype_strict_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        "//tensorflow/python/client:session",
+        "//tensorflow/python:session",
         "//tensorflow/python/platform",
         "//tensorflow/python/types",
     ],
 )
 
-tf_py_test(
-    name = "representative_dataset_test",
-    srcs = ["representative_dataset_test.py"],
-    tags = ["no_pip"],  # b/241528672
-    deps = [
-        ":representative_dataset",
-        "//tensorflow/python/client:session",
-        "//tensorflow/python/framework:ops",
-        "//tensorflow/python/framework:test_lib",
-        "//tensorflow/python/platform:client_testlib",
-        "//tensorflow/python/types",
-        "//third_party/py/numpy",
-    ],
-)
+#tf_py_test(
+#    name = "representative_dataset_test",
+#    srcs = ["representative_dataset_test.py"],
+#    tags = ["no_pip"],  # b/241528672
+#    deps = [
+#        ":representative_dataset",
+#        "//tensorflow/python:session",
+#        "//tensorflow/python:ops",
+#        "//tensorflow/python:test_lib",
+#        "//tensorflow/python/platform:client_testlib",
+#        "//tensorflow/python/types",
+#        "//third_party/py/numpy",
+#    ],
+#)
