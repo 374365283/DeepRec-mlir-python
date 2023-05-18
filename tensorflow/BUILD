@@ -3,6 +3,7 @@
 # learning applications.
 
 load("@bazel_skylib//lib:selects.bzl", "selects")
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 load("//tensorflow:tensorflow.bzl", "VERSION")
 load("//tensorflow:tensorflow.bzl", "tf_cc_shared_object")
 load("//tensorflow:tensorflow.bzl", "tf_custom_op_library_additional_deps_impl")
