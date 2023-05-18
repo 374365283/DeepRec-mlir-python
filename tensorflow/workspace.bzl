@@ -143,8 +143,8 @@ def tf_repositories(path_prefix = "", tf_repo_name = ""):
     )
 
     tf_http_archive(
-        name = "mkl_dnn",
-        build_file = "//third_party/mkl_dnn:mkldnn.BUILD",
+        name = "mkl_dnn",                           # Apache License 2.0
+        build_file = clean_dep("//third_party/mkl_dnn:mkldnn.BUILD"),
         sha256 = "a0211aeb5e7dad50b97fa5dffc1a2fe2fe732572d4164e1ee8750a2ede43fbec",
         strip_prefix = "oneDNN-0.21.3",
         urls = [
@@ -154,13 +154,14 @@ def tf_repositories(path_prefix = "", tf_repo_name = ""):
     )
 
     tf_http_archive(
-        name = "mkl_dnn_v1",
-        build_file = "//third_party/mkl_dnn:mkldnn_v1.BUILD",
+        name = "mkl_dnn_v1",                        # Apache License 2.0
+        build_file = clean_dep("//third_party/mkl_dnn:mkldnn_v1.BUILD"),
+        patch_file = [clean_dep("//third_party/mkl_dnn:oneDNN-v2.7.1-export-bf16-fp16-verbose-3.patch")],
         sha256 = "dc2b9bc851cd8d5a6c4622f7dc215bdb6b32349962875f8bf55cceed45a4c449",
         strip_prefix = "oneDNN-2.7.1",
         urls = [
-            "https://github.com/oneapi-src/oneDNN/archive/refs/tags/v2.7.1.tar.gz",
-            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/oneapi-src/oneDNN/archive/refs/tags/v2.7.1.tar.gz",
+            "https://github.com/oneapi-src/oneDNN/archive/v2.7.1.tar.gz",
+            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/oneapi-src/oneDNN/archive/v2.7.1.tar.gz",
         ],
     )
 
