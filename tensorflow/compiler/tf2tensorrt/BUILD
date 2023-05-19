@@ -23,7 +23,7 @@ load("@local_config_tensorrt//:build_defs.bzl", "if_tensorrt")
 
 # Platform specific build config
 load(
-    "//tensorflow/core/platform:build_config_root.bzl",
+    "//tensorflow/core/platform:default/build_config_root.bzl",
     "if_static",
 )
 

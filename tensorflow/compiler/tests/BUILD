@@ -7,7 +7,7 @@ load(
     "tf_xla_py_test",
 )
 load(
-    "//tensorflow/core/platform:build_config_root.bzl",
+    "//tensorflow/core/platform:default/build_config_root.bzl",
     "tf_cuda_tests_tags",
 )
 load("//tensorflow/python/tpu:tpu.bzl", "tpu_py_test")
