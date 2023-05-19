@@ -178,7 +178,7 @@ py_library(
         ":datasets",
         ":functional",
         ":tpu_py",
-        "//tensorflow/python/compiler/xla/xla_sharding:xla_sharding",
+        "//tensorflow/compiler/xla/xla_sharding:xla_sharding",
         "//tensorflow/compiler/xla/python_api:xla_shape",
         "//tensorflow/core:protos_all_py",
         "//tensorflow/core/protobuf/tpu:compilation_result_proto_py",
