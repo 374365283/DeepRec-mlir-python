@@ -12,6 +12,15 @@ http_archive(
     ],
 )
 
+http_archive(
+    name = "bazel_skylib",
+    sha256 = "74d544d96f4a5bb630d465ca8bbcfe231e3594e5aae57e1edbf17a6eb3ca2506",
+    urls = [
+        "https://storage.googleapis.com/mirror.tensorflow.org/github.com/bazelbuild/bazel-skylib/releases/download/1.3.0/bazel-skylib-1.3.0.tar.gz",
+        "https://github.com/bazelbuild/bazel-skylib/releases/download/1.3.0/bazel-skylib-1.3.0.tar.gz",
+    ],
+)
+
 # Load tf_repositories() before loading dependencies for other repository so
 # that dependencies like com_google_protobuf won't be overridden.
 load("//tensorflow:workspace.bzl", "tf_repositories")
@@ -51,11 +60,6 @@ http_archive(
     urls = ["https://github.com/bazelbuild/apple_support/releases/download/0.6.0/apple_support.0.6.0.tar.gz"],
 )  # https://github.com/bazelbuild/apple_support/releases
 http_archive(
-    name = "bazel_skylib",                                    # Apache License 2.0
-    sha256 = "1c531376ac7e5a180e0237938a2536de0c54d93f5c278634818e0efc952dd56c",
-    urls = ["https://github.com/bazelbuild/bazel-skylib/releases/download/1.0.3/bazel-skylib-1.0.3.tar.gz"],
-)  # https://github.com/bazelbuild/bazel-skylib/releases
-http_archive(
     name = "com_github_apple_swift_swift_protobuf",           # Apache License 2.0
     type = "zip",
     strip_prefix = "swift-protobuf-1.5.0/",
@@ -70,6 +74,15 @@ http_file(
 # `git_repository` rules above, the following call will skip redefining them.
 load("@build_bazel_rules_swift//swift:repositories.bzl", "swift_rules_dependencies")
 swift_rules_dependencies()
+
+load("//third_party/llvm:workspace.bzl", llvm = "repo")
+llvm("llvm-raw")
+
+load("//tensorflow:workspace.bzl", "tf_extra_repositories")
+tf_extra_repositories()
+
+load("//third_party/llvm:setup.bzl", "llvm_setup")
+llvm_setup(name = "llvm-project")
 
 # We must check the bazel version before trying to parse any other BUILD
 # files, in case the parsing of those build files depends on the bazel
