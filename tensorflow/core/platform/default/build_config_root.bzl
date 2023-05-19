@@ -20,8 +20,16 @@ def tf_exec_compatible_with(kwargs):
         return ["@org_tensorflow//third_party/toolchains:gpu_test"]
     return []
 
+GPU_TEST_PROPERTIES = {
+    "dockerRuntime": "nvidia",
+    "Pool": "gpu-pool",
+}
+
 def tf_exec_properties(kwargs):
-     return tf_exec_compatible_with(kwargs)
+    if ("tags" in kwargs and kwargs["tags"] != None and
+        "remote-gpu" in kwargs["tags"]):
+        return GPU_TEST_PROPERTIES
+    return {}
 
 def tf_additional_plugin_deps():
     return select({
