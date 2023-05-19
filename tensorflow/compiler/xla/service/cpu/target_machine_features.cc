@@ -14,7 +14,11 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/compiler/xla/service/cpu/target_machine_features.h"
-#include "tensorflow/core/platform/logging.h"
+
+#include <algorithm>
+
+#include "tensorflow/compiler/xla/cpu_function_runtime.h"
+#include "tensorflow/tsl/platform/logging.h"
 
 namespace xla {
 namespace cpu {
@@ -32,29 +36,19 @@ llvm::TargetTransformInfo* LLVMTargetMachineFeatures::GetTargetTransformInfoFor(
   return &it->second;
 }
 
-int64 LLVMTargetMachineFeatures::minimum_alignment_for_allocation(
-    int64 size_bytes) const {
-  // GLibc malloc returns a pointer with alignment 8 on 32-bit platforms and 16
-  // on 64-bit platforms.  TCMalloc returns a pointer with alignment 8 for
-  // allocations smaller than kMallocAlignmentThreshold bytes and at least
-  // alignment 16 for allocations greater than or equal to
-  // kMallocAlignmentThreshold bytes.  N.B. We could improve on this lower bound
-  // by explicitly allocating the memory with posix_memalign.  This is
-  // complicated by our desire to allow parameter buffers created by clients to
-  // be consumed directly by the JIT.
+int64_t LLVMTargetMachineFeatures::minimum_alignment_for_allocation(
+    int64_t size_bytes) const {
+  // Assume that all pointers are aligned to at least
+  // xla::cpu_function_runtime::kMinAlign.
   if (size_bytes == 0) {
     // No need to align empty buffers.
     return 1;
   }
 
-  const int64 kMallocAlignmentThreshold = 512;
-
-  int pointer_size = target_machine_->getPointerSize(0);
-  int buffer_alignment =
-      size_bytes >= kMallocAlignmentThreshold ? 2 * pointer_size : pointer_size;
-  DCHECK_GT(buffer_alignment, 0);
-
-  return buffer_alignment;
+  // Allow small buffers to be underaligned, there is no vectorization benefit
+  // anyways.
+  return std::min<int64_t>(llvm::PowerOf2Ceil(size_bytes),
+                           cpu_function_runtime::MinAlign());
 }
 
 }  // namespace cpu

@@ -15,21 +15,27 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/lite/flatbuffer_operator.h"
 
+#include <string>
 #include <vector>
 
 #include "absl/strings/str_cat.h"
-#include "flatbuffers/flexbuffers.h"  // TF:flatbuffers
+#include "flatbuffers/flatbuffers.h"  // from @flatbuffers
+#include "flatbuffers/flexbuffers.h"  // from @flatbuffers
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
-#include "mlir/IR/Attributes.h"  // TF:llvm-project
-#include "mlir/IR/Builders.h"  // TF:llvm-project
-#include "mlir/IR/StandardTypes.h"  // TF:llvm-project
+#include "llvm/ADT/Twine.h"
+#include "mlir/IR/Attributes.h"  // from @llvm-project
+#include "mlir/IR/Builders.h"  // from @llvm-project
+#include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
-#include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
+#include "tensorflow/compiler/mlir/lite/utils/convert_type.h"
+#include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
 #include "tensorflow/compiler/xla/statusor.h"
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/lite/kernels/internal/kernel_utils.h"
 #include "tensorflow/lite/schema/schema_generated.h"
+#include "tensorflow/lite/schema/schema_utils.h"
 
 namespace {
 
@@ -55,6 +61,23 @@ StatusOr<mlir::StringAttr> GetPaddingAttr(TfLitePadding pad_params,
 }
 
 }  // namespace
+
+std::string mlir::GetMlirOpNameFromOpCode(
+    const tflite::OperatorCodeT& op_code) {
+  auto builtin_code = tflite::GetBuiltinCode(&op_code);
+  if (builtin_code == tflite::BuiltinOperator_CUSTOM) {
+    return std::string("tfl.custom");
+  }
+  if (builtin_code == tflite::BuiltinOperator_IF) {
+    return std::string("tf.If");
+  }
+  if (builtin_code == tflite::BuiltinOperator_WHILE) {
+    return std::string("tfl.while");
+  }
+
+  llvm::StringRef op_name(tflite::EnumNameBuiltinOperator(builtin_code));
+  return llvm::Twine("tfl.", op_name.lower()).str();
+}
 
 // TODO(jpienaar): This is a placeholder. This should be done in more efficient
 // way when part of the translation of module.
@@ -87,58 +110,36 @@ static tflite::Padding ConvertTFL_PaddingAttrForOptionWriter(
 }
 
 static tflite::MirrorPadMode ConvertTFL_MirrorPaddingAttrForOptionWriter(
-    llvm::StringRef str, flatbuffers::FlatBufferBuilder* builder) {
-  return llvm::StringSwitch<tflite::MirrorPadMode>(str)
-      .Case("REFLECT", tflite::MirrorPadMode_REFLECT)
-      .Case("SYMMETRIC", tflite::MirrorPadMode_SYMMETRIC);
+    mlir::TFL::MirrorPaddingType padding,
+    flatbuffers::FlatBufferBuilder* builder) {
+  switch (padding) {
+    case mlir::TFL::MirrorPaddingType::REFLECT:
+      return tflite::MirrorPadMode_REFLECT;
+    case mlir::TFL::MirrorPaddingType::SYMMETRIC:
+      return tflite::MirrorPadMode_SYMMETRIC;
+  }
+  llvm_unreachable("invalid mirror_pad_enum in conversion.");
 }
 
 static tflite::TensorType ConvertDerivedTypeAttrForOptionWriter(
     mlir::Type type, flatbuffers::FlatBufferBuilder* builder) {
-  switch (type.getKind()) {
-    case mlir::StandardTypes::F16:
-      return tflite::TensorType_FLOAT16;
-    case mlir::StandardTypes::F32:
-      return tflite::TensorType_FLOAT32;
-    case mlir::TF::TensorFlowTypes::STRING:
-      return tflite::TensorType_STRING;
-    case mlir::StandardTypes::Complex: {
-      auto etype = type.cast<mlir::ComplexType>().getElementType();
-      if (etype.isF32()) {
-        return tflite::TensorType_COMPLEX64;
-      }
-      llvm_unreachable("invalid complex Type in conversion");
-    }
-    case mlir::StandardTypes::Integer: {
-      const auto& itype = type.cast<mlir::IntegerType>();
-      switch (itype.getWidth()) {
-        case 1:
-          return tflite::TensorType_BOOL;
-        case 8:
-          return tflite::TensorType_INT8;
-        case 16:
-          return tflite::TensorType_INT16;
-        case 32:
-          return tflite::TensorType_INT32;
-        case 64:
-          return tflite::TensorType_INT64;
-        default:
-          llvm_unreachable("invalid integer Type in conversion");
-      }
-    }
-    default:
-      llvm_unreachable("invalid Type in conversion");
-  }
+  return tflite::ConvertTypeToTensorType(type);
 }
 
 // I32Attr already returns an int as required by flatbuffer builders.
 static int ConvertI32AttrForOptionWriter(
-    llvm::APInt i, flatbuffers::FlatBufferBuilder* builder) {
-  return i.getSExtValue();
+    int i, flatbuffers::FlatBufferBuilder* builder) {
+  return i;
+}
+
+// I64Attr already returns a int64_t as required by flatbuffer builders.
+static int64_t ConvertI64AttrForOptionWriter(
+    int64_t i, flatbuffers::FlatBufferBuilder* builder) {
+  return i;
 }
 
 static int ConvertPositiveI32AttrForOptionWriter(
-    llvm::APInt i, flatbuffers::FlatBufferBuilder* builder) {
+    int i, flatbuffers::FlatBufferBuilder* builder) {
   return ConvertI32AttrForOptionWriter(i, builder);
 }
 
@@ -153,6 +154,18 @@ ConvertI64ArrayAttrForOptionWriter(mlir::ArrayAttr attrArray,
   return builder->CreateVector(intVec);
 }
 
+static flatbuffers::Offset<flatbuffers::Vector<float>>
+ConvertF32ArrayAttrForOptionWriter(mlir::ArrayAttr attrArray,
+                                   flatbuffers::FlatBufferBuilder* builder) {
+  std::vector<float> floatVec;
+  floatVec.reserve(attrArray.getValue().size());
+  for (auto attr : attrArray.getValue()) {
+    floatVec.push_back(
+        attr.cast<mlir::FloatAttr>().getValue().convertToFloat());
+  }
+  return builder->CreateVector(floatVec);
+}
+
 // F32Attr already returns a float as required by flatbuffer builders.
 static float ConvertF32AttrForOptionWriter(
     llvm::APFloat f, flatbuffers::FlatBufferBuilder* builder) {
@@ -163,6 +176,23 @@ static float ConvertF32AttrForOptionWriter(
 static bool ConvertBoolAttrForOptionWriter(
     bool b, flatbuffers::FlatBufferBuilder* builder) {
   return b;
+}
+
+// Overloading of ConvertBoolAttrForOptionWriter which takes Optional<bool> as
+// an input. If value is not specified, false is set for the attribute.
+static bool ConvertBoolAttrForOptionWriter(
+    mlir::Optional<bool> b, flatbuffers::FlatBufferBuilder* builder) {
+  return b.has_value() ? b.getValue() : false;
+}
+
+static flatbuffers::Offset<flatbuffers::String> ConvertStrAttrForOptionWriter(
+    llvm::StringRef str, flatbuffers::FlatBufferBuilder* builder) {
+  return builder->CreateString(str.str());
+}
+
+static tflite::TensorType ConvertTypeAttrForOptionWriter(
+    mlir::Type type, flatbuffers::FlatBufferBuilder* builder) {
+  return tflite::ConvertTypeToTensorType(type);
 }
 
 static flatbuffers::Offset<flatbuffers::Vector<int32_t>>
@@ -182,14 +212,24 @@ ConvertTFL_FullyConnectedOptionsWeightFormatAttrForOptionWriter(
 }
 
 static tflite::LSTMKernelType ConvertTFL_LSTMKernelTypeAttrForOptionWriter(
-    llvm::StringRef str, flatbuffers::FlatBufferBuilder* builder) {
-  return llvm::StringSwitch<tflite::LSTMKernelType>(str)
-      .Case("FULL", tflite::LSTMKernelType_FULL)
-      .Case("BASIC", tflite::LSTMKernelType_BASIC);
+    mlir::TFL::LSTMKernelType kernel_type,
+    flatbuffers::FlatBufferBuilder* builder) {
+  switch (kernel_type) {
+    case mlir::TFL::LSTMKernelType::FULL:
+      return tflite::LSTMKernelType_FULL;
+    case mlir::TFL::LSTMKernelType::BASIC:
+      return tflite::LSTMKernelType_BASIC;
+  }
+  llvm_unreachable("invalid lstm_kernel_type in conversion.");
 }
 
 static mlir::Attribute BuildBoolAttr(bool value, mlir::Builder builder) {
   return builder.getBoolAttr(value);
+}
+
+static mlir::Attribute BuildStrAttr(llvm::StringRef str,
+                                    mlir::Builder builder) {
+  return builder.getStringAttr(str);
 }
 
 static mlir::Attribute BuildF32Attr(float value, mlir::Builder builder) {
@@ -200,15 +240,30 @@ static mlir::Attribute BuildI32Attr(int32_t value, mlir::Builder builder) {
   return builder.getI32IntegerAttr(value);
 }
 
+static mlir::Attribute BuildI64Attr(int64_t value, mlir::Builder builder) {
+  return builder.getI64IntegerAttr(value);
+}
+
 static mlir::Attribute BuildI64ArrayAttr(std::vector<int32_t> value,
                                          mlir::Builder builder) {
   std::vector<int64_t> typecast(value.begin(), value.end());
   return builder.getI64ArrayAttr(typecast);
 }
 
+static mlir::Attribute BuildF32ArrayAttr(std::vector<float> value,
+                                         mlir::Builder builder) {
+  std::vector<float> typecast(value.begin(), value.end());
+  return builder.getF32ArrayAttr(typecast);
+}
+
 static mlir::Attribute BuildPositiveI32Attr(int32_t value,
                                             mlir::Builder builder) {
   return builder.getI32IntegerAttr(value);
+}
+
+static mlir::Attribute BuildTypeAttr(tflite::TensorType value,
+                                     mlir::Builder builder) {
+  return mlir::TypeAttr::get(ConvertElementType(value, builder));
 }
 
 static mlir::Attribute BuildTFL_AFAttr(tflite::ActivationFunctionType value,
@@ -226,14 +281,31 @@ static mlir::Attribute BuildTFL_FullyConnectedOptionsWeightFormatAttr(
 
 static mlir::Attribute BuildTFL_LSTMKernelTypeAttr(tflite::LSTMKernelType value,
                                                    mlir::Builder builder) {
-  const char* option_name = tflite::EnumNameLSTMKernelType(value);
-  return builder.getStringAttr(option_name);
+  mlir::TFL::LSTMKernelType kernel_type;
+  switch (value) {
+    case tflite::LSTMKernelType_FULL:
+      kernel_type = mlir::TFL::LSTMKernelType::FULL;
+      break;
+    case tflite::LSTMKernelType_BASIC:
+      kernel_type = mlir::TFL::LSTMKernelType::BASIC;
+      break;
+  }
+  return mlir::TFL::LSTMKernelTypeAttr::get(builder.getContext(), kernel_type);
 }
 
 static mlir::Attribute BuildTFL_MirrorPaddingAttr(tflite::MirrorPadMode value,
                                                   mlir::Builder builder) {
-  const char* option_name = tflite::EnumNameMirrorPadMode(value);
-  return builder.getStringAttr(option_name);
+  mlir::TFL::MirrorPaddingType padding;
+  switch (value) {
+    case tflite::MirrorPadMode_REFLECT:
+      padding = mlir::TFL::MirrorPaddingType::REFLECT;
+      break;
+    case tflite::MirrorPadMode_SYMMETRIC:
+    default:
+      padding = mlir::TFL::MirrorPaddingType::SYMMETRIC;
+      break;
+  }
+  return mlir::TFL::MirrorPaddingTypeAttr::get(builder.getContext(), padding);
 }
 
 static mlir::Attribute BuildTFL_PaddingAttr(tflite::Padding value,
@@ -243,42 +315,19 @@ static mlir::Attribute BuildTFL_PaddingAttr(tflite::Padding value,
 }
 
 Status mlir::CustomOptionsToAttributes(
-    const std::string& op_name, const std::vector<uint8_t>& custom_options,
+    const std::string& custom_code, const std::vector<uint8_t>& custom_options,
     mlir::Builder builder, mlir::Location loc,
     llvm::SmallVectorImpl<mlir::NamedAttribute>* attributes) {
-  if (op_name == "tfl.max_pooling_with_argmax_2d" ||
-      op_name == "tfl.max_unpooling_2d") {
-    auto* pool_params =
-        reinterpret_cast<const TfLitePoolParams*>(custom_options.data());
-    TF_ASSIGN_OR_RETURN(auto padding_attribute,
-                        GetPaddingAttr(pool_params->padding, builder, loc));
-    attributes->emplace_back(
-        builder.getNamedAttr("padding", padding_attribute));
-    attributes->emplace_back(builder.getNamedAttr(
-        "stride_h", builder.getI32IntegerAttr(pool_params->stride_height)));
-    attributes->emplace_back(builder.getNamedAttr(
-        "stride_w", builder.getI32IntegerAttr(pool_params->stride_width)));
-    attributes->emplace_back(builder.getNamedAttr(
-        "filter_h", builder.getI32IntegerAttr(pool_params->filter_height)));
-    attributes->emplace_back(builder.getNamedAttr(
-        "filter_w", builder.getI32IntegerAttr(pool_params->filter_width)));
-    return Status::OK();
+  attributes->emplace_back(
+      builder.getNamedAttr("custom_code", builder.getStringAttr(custom_code)));
+  std::string content;
+  content.assign(reinterpret_cast<const char*>(custom_options.data()),
+                 custom_options.size());
+  attributes->emplace_back(builder.getNamedAttr(
+      "custom_option",
+      mlir::TFL::ConstBytesAttr::get(builder.getContext(), content)));
 
-  } else if (op_name == "tfl.convolution_2d_transpose_bias") {
-    auto* conv_params = reinterpret_cast<const TfLiteTransposeConvParams*>(
-        custom_options.data());
-    TF_ASSIGN_OR_RETURN(auto padding_attribute,
-                        GetPaddingAttr(conv_params->padding, builder, loc));
-    attributes->emplace_back(
-        builder.getNamedAttr("padding", padding_attribute));
-    attributes->emplace_back(builder.getNamedAttr(
-        "stride_h", builder.getI32IntegerAttr(conv_params->stride_height)));
-    attributes->emplace_back(builder.getNamedAttr(
-        "stride_w", builder.getI32IntegerAttr(conv_params->stride_width)));
-    return Status::OK();
-  }
-
-  return InvalidArgument(absl::StrCat("invalid custom op type: ", op_name));
+  return ::tensorflow::OkStatus();
 }
 
 // Pull in FlatBuffer writers for TFLite generated using TableGen

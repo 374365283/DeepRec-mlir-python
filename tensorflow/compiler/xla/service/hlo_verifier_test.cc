@@ -26,12 +26,10 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/hlo_parser.h"
 #include "tensorflow/compiler/xla/service/layout_assignment.h"
 #include "tensorflow/compiler/xla/shape_util.h"
-#include "tensorflow/compiler/xla/test.h"
 #include "tensorflow/compiler/xla/tests/hlo_test_base.h"
-#include "tensorflow/compiler/xla/types.h"
 #include "tensorflow/compiler/xla/xla.pb.h"
 #include "tensorflow/compiler/xla/xla_data.pb.h"
-#include "tensorflow/core/lib/core/status_test_util.h"
+#include "tensorflow/tsl/lib/core/status_test_util.h"
 
 namespace xla {
 namespace {
@@ -39,7 +37,7 @@ namespace {
 using ::testing::HasSubstr;
 
 std::unique_ptr<HloModule> CreateUnverifiedModule() {
-  return absl::make_unique<HloModule>("module", HloModuleConfig());
+  return std::make_unique<HloModule>("module", HloModuleConfig());
 }
 
 // This class cannot be converted to use HloTestBase. It explicitly
@@ -64,6 +62,13 @@ class HloVerifierTestLayoutSensitive : public HloTestBase {
       : HloTestBase(/*verifier_layout_sensitive=*/true,
                     /*allow_mixed_precision_in_hlo_verifier=*/false,
                     LayoutAssignment::InstructionCanChangeLayout) {}
+};
+
+class HloVerifierTestLayoutFusion : public HloTestBase {
+ public:
+  HloVerifierTestLayoutFusion()
+      : HloTestBase(/*verifier_layout_sensitive=*/true,
+                    /*allow_mixed_precision_in_hlo_verifier=*/false) {}
 };
 
 TEST_F(HloVerifierTest, NullInstructionParent) {
@@ -176,6 +181,28 @@ TEST_F(HloVerifierTest, CheckCallOperandParameterShapesMismatch) {
               HasSubstr("shape does not match parameter"));
 }
 
+TEST_F(HloVerifierTest, CheckCallThreadMismatch) {
+  constexpr absl::string_view hlo = R"(
+    HloModule Module
+
+    callme {
+      ROOT param = (s32[], f32[4]) parameter(0)
+    }, execution_thread="parallel_thread"
+
+    ENTRY entry {
+      p0 = (s32[], f32[4]) parameter(0)
+      ROOT mycall = (s32[], f32[4]) call(p0), to_apply=callme
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnUnverifiedModule(hlo));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("expects parent computation thread name same as called "
+                        "computation's thread name"));
+}
+
 TEST_F(HloVerifierTest, CheckConditionalOperandParameterShapesMismatch) {
   const char* const hlo_string = R"(
   HloModule Module
@@ -250,6 +277,72 @@ TEST_F(HloVerifierTest, CheckConditionalBranchIndexOperandShape) {
   ASSERT_FALSE(status.ok());
   EXPECT_THAT(status.error_message(),
               HasSubstr("first operand of conditional must be a scalar"));
+}
+
+TEST_F(HloVerifierTest, CheckConditionalBranchThread) {
+  const char* const hlo_string = R"(
+    HloModule Module
+
+    branch0 {
+      tparam = f32[4] parameter(0)
+      ROOT tgte1 = f32[4] ceil(tparam)
+    }
+
+    branch1 {
+      fparam = f32[4] parameter(0)
+      ROOT fgte1 = f32[4] floor(fparam)
+    }, execution_thread="parallel_thread"
+
+    branch2 {
+      sparam = f32[4] parameter(0)
+      ROOT sgte1 = f32[4] ceil(sparam)
+    }
+
+    ENTRY entry {
+      p0 = f32[4] parameter(0)
+      b0 = s32[] parameter(1)
+      ROOT conditional = f32[4] conditional(b0, p0, p0, p0),
+        branch_computations={branch0, branch1, branch2}
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+  auto status = verifier().Run(module.get()).status();
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("expects parent computation thread name same as called "
+                        "computation's thread name"));
+}
+
+TEST_F(HloVerifierTest, CheckConditionalBranchContainsAsyncThread) {
+  const char* const hlo_string = R"(
+    HloModule Module
+
+    branch0 {
+      tparam = f32[4] parameter(0)
+      ROOT tgte1 = f32[4] ceil(tparam)
+    }
+
+    branch1 {
+      fparam = f32[4] parameter(0)
+      %async-start = ((f32[4]), f32[4], s32[]) custom-call-start(f32[4] fparam), async_execution_thread="parallel_thread", custom_call_target="foo"
+      ROOT %async-done = f32[4] custom-call-done(((f32[4]), f32[4], s32[]) %async-start), async_execution_thread="parallel_thread", custom_call_target="foo"
+    }
+
+    branch2 {
+      sparam = f32[4] parameter(0)
+      ROOT sgte1 = f32[4] ceil(sparam)
+    }
+
+    ENTRY entry {
+      p0 = f32[4] parameter(0)
+      b0 = s32[] parameter(1)
+      ROOT conditional = f32[4] conditional(b0, p0, p0, p0),
+        branch_computations={branch0, branch1, branch2}
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+  TF_ASSERT_OK(verifier().Run(module.get()).status());
 }
 
 TEST_F(HloVerifierTest, RngOpnd0NotScalar) {
@@ -394,6 +487,21 @@ TEST_F(HloVerifierTest, PadNegativeInteriorDilationNotAllowed) {
               HasSubstr("Interior padding cannot be negative"));
 }
 
+TEST_F(HloVerifierTest, DotMixedPrecisionAllowed) {
+  static const char* const kDotHloString = R"(
+HloModule module
+ENTRY entry_computation {
+  a = f32[2,10] parameter(0)
+  b = bf16[10,2] parameter(1)
+  ROOT dot = f32[2,2] dot(a, b), lhs_contracting_dims={1}, rhs_contracting_dims={0}
+})";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(kDotHloString));
+
+  auto status = verifier().Run(module.get()).status();
+  EXPECT_TRUE(status.ok()) << status;
+}
+
 // Simple module containing a convolution as the root.
 static const char* const kConvHloString = R"(
 HloModule module
@@ -494,6 +602,28 @@ TEST_F(HloVerifierTest, ScalarIndexDynamicUpdateSlice) {
   ASSERT_TRUE(status.ok());
 }
 
+TEST_F(HloVerifierTestAllowMixedPrecision, DynamicUpdateSliceMixedPrecision) {
+  const char* const kDynamicUpdateSliceMixedPrecision = R"(
+    HloModule kDynamicUpdateSliceMixedPrecision
+
+    ENTRY %entry (parameter.0: f32[32,511,2048], parameter.1: bf16[32,511,512], parameter.2: s32[], parameter.3: s32[], parameter.4: s32[]) -> bf16[32,511,2048] {
+      %parameter.0 = f32[32,511,2048] parameter(0)
+      %parameter.1 = bf16[32,511,512] parameter(1)
+      %parameter.2 = s32[] parameter(2)
+      %parameter.3 = s32[] parameter(3)
+      %parameter.4 = s32[] parameter(4)
+      ROOT %dus = bf16[32,511,2048] dynamic-update-slice(f32[32,511,2048] %parameter.0, bf16[32,511,512] %parameter.1, s32[] %parameter.2, s32[] %parameter.3, s32[] %parameter.4)
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnUnverifiedModule(
+                                           kDynamicUpdateSliceMixedPrecision));
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("Expected instruction to have shape equal to "
+                        "f32[32,511,2048], actual shape is bf16[32,511,2048]"));
+}
+
 TEST_F(HloVerifierTestLayoutSensitive, AddWithLayoutChangeNotAllowed) {
   TF_ASSERT_OK_AND_ASSIGN(
       auto module, ParseAndReturnUnverifiedModule(kAddWithLayoutChangeHlo));
@@ -538,24 +668,6 @@ TEST_F(HloVerifierTestLayoutSensitive, ConcatWithLayoutChangeNotAllowed) {
   ASSERT_FALSE(status.ok());
   EXPECT_THAT(status.error_message(),
               HasSubstr("Instruction shouldn't change layouts"));
-}
-
-TEST_F(HloVerifierTest, BitcastCanNotChangeElementType) {
-  const char* const hlo_string = R"(
-  HloModule Module
-
-  ENTRY BitcastCanNotChangeElementType {
-   constant.0 = f32[2] constant({0.0, 0.0})
-   ROOT bitcast = s32[2] bitcast(constant.0)
-  }
-  )";
-  TF_ASSERT_OK_AND_ASSIGN(auto module,
-                          ParseAndReturnUnverifiedModule(hlo_string));
-
-  auto status = verifier().Run(module.get()).status();
-  ASSERT_FALSE(status.ok());
-  EXPECT_THAT(status.error_message(),
-              HasSubstr("Bitcast can not change the element type"));
 }
 
 TEST_F(HloVerifierTestLayoutSensitive, BitcastNeedsSameNumberOfElements) {
@@ -710,7 +822,7 @@ TEST_F(HloVerifierTest, CopyStartMultipleCopyDone) {
   ASSERT_FALSE(status.ok());
   EXPECT_THAT(
       status.error_message(),
-      HasSubstr("CopyStart instruction requires one consumer, found 2"));
+      HasSubstr("copy-start instruction requires one consumer, found 2"));
 }
 
 TEST_F(HloVerifierTest, CopyDoneNoCopyStart) {
@@ -730,8 +842,423 @@ TEST_F(HloVerifierTest, CopyDoneNoCopyStart) {
   auto status = verifier().Run(module.get()).status();
   ASSERT_FALSE(status.ok());
   EXPECT_THAT(status.error_message(),
-              HasSubstr("The operand of a CopyDone instruction needs to be "
-                        "CopyStart, found tuple"));
+              HasSubstr("The operand of a copy-done instruction needs to be "
+                        "copy-start, found tuple"));
+}
+
+TEST_F(HloVerifierTestLayoutSensitive, AsyncStartAndAsyncDone) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  ENTRY AsyncStartAndAsyncDone {
+    p0 = f32[2,3]{1,0:S(1)} parameter(0)
+    async-start = ((f32[2,3]{1,0:S(1)}), f32[2,3]{1,0:S(2)}, u32[]) custom-call-start(p0), custom_call_target="foo"
+    ROOT async-done = f32[2,3]{1,0:S(2)} custom-call-done(async-start), custom_call_target="foo"
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_TRUE(status.ok());
+}
+
+TEST_F(HloVerifierTestLayoutSensitive, AsyncStartAndAsyncUpdateAndAsyncDone) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  ENTRY AsyncStartAndAsyncUpdateAndAsyncDone {
+    p0 = f32[2,3]{1,0:S(1)} parameter(0)
+    async-start = ((f32[2,3]{1,0:S(1)}), f32[2,3]{1,0:S(2)}, u32[]) custom-call-start(p0), custom_call_target="foo"
+    async-update.1 = ((f32[2,3]{1,0:S(1)}), f32[2,3]{1,0:S(2)}, u32[]) custom-call-update(async-start), custom_call_target="foo"
+    async-update.2 = ((f32[2,3]{1,0:S(1)}), f32[2,3]{1,0:S(2)}, u32[]) custom-call-update(async-update.1), custom_call_target="foo"
+    ROOT async-done = f32[2,3]{1,0:S(2)} custom-call-done(async-update.2), custom_call_target="foo"
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_TRUE(status.ok());
+}
+
+TEST_F(HloVerifierTestLayoutSensitive,
+       AsyncStartAndAsyncUpdateAndAsyncDoneWithThreadName) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  ENTRY AsyncStartAndAsyncUpdateAndAsyncDone {
+    p0 = f32[2,3]{1,0:S(1)} parameter(0)
+    async-start = ((f32[2,3]{1,0:S(1)}), f32[2,3]{1,0:S(2)}, u32[]) custom-call-start(p0), async_execution_thread="parallel_thread", custom_call_target="foo"
+    async-update.1 = ((f32[2,3]{1,0:S(1)}), f32[2,3]{1,0:S(2)}, u32[]) custom-call-update(async-start), async_execution_thread="parallel_thread", custom_call_target="foo"
+    async-update.2 = ((f32[2,3]{1,0:S(1)}), f32[2,3]{1,0:S(2)}, u32[]) custom-call-update(async-update.1), async_execution_thread="parallel_thread", custom_call_target="foo"
+    ROOT async-done = f32[2,3]{1,0:S(2)} custom-call-done(async-update.2), async_execution_thread="parallel_thread", custom_call_target="foo"
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_TRUE(status.ok());
+}
+
+TEST_F(HloVerifierTest, AsyncStartAndAsyncDoneWrongType) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  ENTRY AsyncStartAndAsyncDone {
+    p0 = f32[2,3] parameter(0)
+    async-start = ((f32[2,3]), f32[3,2], u32[]) custom-call-start(p0), custom_call_target="foo"
+    ROOT async-done = f32[2,3] custom-call-done(async-start), custom_call_target="foo"
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("async-done expects the async shape at index {1} to "
+                        "match the async computation root shape"));
+}
+
+TEST_F(HloVerifierTest, AsyncStartAndAsyncDoneWrongThreadName) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  ENTRY AsyncStartAndAsyncDone {
+    p0 = f32[2,3] parameter(0)
+    async-start = ((f32[2,3]), f32[2,3], u32[]) custom-call-start(p0), async_execution_thread="parallel_thread", custom_call_target="foo"
+    ROOT async-done = f32[2,3] custom-call-done(async-start), async_execution_thread="main_thread", custom_call_target="bar"
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("thread name (main_thread vs parallel_thread)."));
+}
+
+TEST_F(HloVerifierTest, AsyncStartAndAsyncDoneWrongAttr) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  ENTRY AsyncStartAndAsyncDone {
+    p0 = f32[2,3] parameter(0)
+    async-start = ((f32[2,3]), f32[2,3], u32[]) custom-call-start(p0), custom_call_target="foo"
+    ROOT async-done = f32[2,3] custom-call-done(async-start), custom_call_target="bar"
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("async-done expects its wrapped async computation to "
+                        "be identical to its operand's"));
+}
+
+TEST_F(HloVerifierTest, AsyncStartMultipleAsyncDone) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  ENTRY AsyncStartAndAsyncDone {
+    p0 = f32[2,3] parameter(0)
+    async-start = ((f32[2,3]), f32[2,3], u32[]) custom-call-start(p0), custom_call_target="foo"
+    async-done.1 = f32[2,3] custom-call-done(async-start), custom_call_target="foo"
+    async-done.2 = f32[2,3] custom-call-done(async-start), custom_call_target="foo"
+    ROOT tuple = (f32[2,3], f32[2,3]) tuple(async-done.1, async-done.2)
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(
+      status.error_message(),
+      HasSubstr("async-start instruction requires one consumer, found 2"));
+}
+
+TEST_F(HloVerifierTest, AsyncStartNoAsyncDone) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  ENTRY AsyncStartAndAsyncDone {
+    p0 = f32[2,3] parameter(0)
+    ROOT async-start = ((f32[2,3]), f32[2,3], u32[]) custom-call-start(p0), custom_call_target="foo"
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(
+      status.error_message(),
+      HasSubstr("async-start instruction requires one consumer, found 0"));
+}
+
+TEST_F(HloVerifierTest, AsyncStartAndAsyncUpdateNoAsyncDone) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  ENTRY AsyncStartAndAsyncDone {
+    p0 = f32[2,3] parameter(0)
+    async-start = ((f32[2,3]), f32[2,3], u32[]) custom-call-start(p0), custom_call_target="foo"
+    ROOT async-update = ((f32[2,3]), f32[2,3], u32[]) custom-call-update(async-start), custom_call_target="foo"
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(
+      status.error_message(),
+      HasSubstr("async-update instruction requires one consumer, found 0"));
+}
+
+TEST_F(HloVerifierTest, AsyncDoneNoAsyncStart) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  ENTRY AsyncStartAndAsyncDone {
+    p0 = f32[2,3] parameter(0)
+    p1 = u32[] parameter(1)
+    tuple = ((f32[2,3]), f32[2,3], u32[]) tuple(p0, p0, p1)
+    ROOT async-done = f32[2,3] custom-call-done(tuple), custom_call_target="foo"
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("The operand of a async-done instruction needs to be "
+                        "async-start or async-update, found tuple"));
+}
+
+TEST_F(HloVerifierTest, AsyncUpdateAndAsyncDoneNoAsyncStart) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  ENTRY AsyncStartAndAsyncDone {
+    p0 = f32[2,3] parameter(0)
+    p1 = u32[] parameter(1)
+    tuple = ((f32[2,3]), f32[2,3], u32[]) tuple(p0, p0, p1)
+    async-update = ((f32[2,3]), f32[2,3], u32[]) custom-call-update(tuple), custom_call_target="foo"
+    ROOT async-done = f32[2,3] custom-call-done(tuple), custom_call_target="foo"
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("The operand of a async-update instruction needs to be "
+                        "async-start or async-update, found tuple"));
+}
+
+TEST_F(HloVerifierTest, AsyncOpComputationParamWrongType) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  async_computation {
+    p = f32[2,3] parameter(0)
+    ROOT custom-call = f32[3,2] custom-call(p), custom_call_target="foo"
+  }
+
+  ENTRY AsyncStartAndAsyncDone {
+    p0 = f32[2,3] parameter(0)
+    async-start = ((f32[3,2]), f32[3,2], u32[]) async-start(p0), calls=async_computation
+    ROOT async-done = f32[3,2] async-done(async-start), calls=async_computation
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("async-start expects the async shape at index {0} to "
+                        "match async computation parameter shape"));
+}
+
+TEST_F(HloVerifierTest, AsyncOpComputationRootWrongType) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  async_computation {
+    p = f32[2,3] parameter(0)
+    ROOT custom-call = f32[3,2] custom-call(p), custom_call_target="foo"
+  }
+
+  ENTRY AsyncStartAndAsyncDone {
+    p0 = f32[2,3] parameter(0)
+    async-start = ((f32[2,3]), f32[2,3], u32[]) async-start(p0), calls=async_computation
+    ROOT async-done = f32[3,2] async-done(async-start), calls=async_computation
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("async-start expects the async shape at index {1} to "
+                        "match the async computation root shape"));
+}
+
+TEST_F(HloVerifierTest, AsyncOpTupleWrongType) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  async_computation {
+    p = f32[2,3] parameter(0)
+    ROOT custom-call = f32[3,2] custom-call(p), custom_call_target="foo"
+  }
+
+  ENTRY AsyncStartAndAsyncDone {
+    p0 = f32[2,3] parameter(0)
+    async-start = ((f32[2,3])) async-start(p0), calls=async_computation
+    ROOT async-done = f32[3,2] async-done(async-start), calls=async_computation
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("async-start expects the async shape to be a tuple of "
+                        "at least two elements"));
+}
+
+TEST_F(HloVerifierTest, AsyncStartOperandWrongType) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  async_computation {
+    p = f32[2,3] parameter(0)
+    ROOT custom-call = f32[3,2] custom-call(p), custom_call_target="foo"
+  }
+
+  ENTRY AsyncStartAndAsyncDone {
+    p0 = f32[3,2] parameter(0)
+    async-start = ((f32[2,3]), f32[3,2], u32[]) async-start(p0), calls=async_computation
+    ROOT async-done = f32[3,2] async-done(async-start), calls=async_computation
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("async-start expects the shape of operand 0 to match "
+                        "the async shape at index {0}"));
+}
+
+TEST_F(HloVerifierTest, AsyncDoneOutputWrongType) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  async_computation {
+    p = f32[2,3] parameter(0)
+    ROOT custom-call = f32[3,2] custom-call(p), custom_call_target="foo"
+  }
+
+  ENTRY AsyncStartAndAsyncDone {
+    p0 = f32[2,3] parameter(0)
+    async-start = ((f32[2,3]), f32[3,2], u32[]) async-start(p0), calls=async_computation
+    ROOT async-done = f32[2,3] async-done(async-start), calls=async_computation
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("async-done expects the shape of output to match the "
+                        "async shape at index {1}"));
+}
+
+TEST_F(HloVerifierTest, AsyncUpdateWrongType) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  async_computation {
+    p = f32[2,3] parameter(0)
+    ROOT custom-call = f32[3,2] custom-call(p), custom_call_target="foo"
+  }
+
+  ENTRY AsyncStartAndAsyncDone {
+    p0 = f32[2,3] parameter(0)
+    async-start = ((f32[2,3]), f32[3,2], u32[]) async-start(p0), calls=async_computation
+    async-update = ((f32[3,2]), f32[3,2], u32[]) async-update(async-start), calls=async_computation
+    ROOT async-done = f32[3,2] async-done(async-update), calls=async_computation
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(
+      status.error_message(),
+      HasSubstr(
+          "async-update expects the shape of operand and output to match"));
+}
+
+TEST_F(HloVerifierTestLayoutSensitive, AsyncDoneWrongGroupId) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  ENTRY AsyncStartAndAsyncUpdateAndAsyncDone {
+    p0 = f32[2,3]{1,0:S(1)} parameter(0)
+    async-start = ((f32[2,3]{1,0:S(1)}), f32[2,3]{1,0:S(2)}, u32[]) custom-call-start(p0), async_group_id=0, custom_call_target="foo"
+    async-update.1 = ((f32[2,3]{1,0:S(1)}), f32[2,3]{1,0:S(2)}, u32[]) custom-call-update(async-start), async_group_id=0, custom_call_target="foo"
+    async-update.2 = ((f32[2,3]{1,0:S(1)}), f32[2,3]{1,0:S(2)}, u32[]) custom-call-update(async-update.1), async_group_id=0, custom_call_target="foo"
+    ROOT async-done = f32[2,3]{1,0:S(2)} custom-call-done(async-update.2), async_group_id=1, custom_call_target="foo"
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("async-done expects its operand to have the same group "
+                        "id (1 vs 0)."));
+}
+
+TEST_F(HloVerifierTestLayoutSensitive, AsyncUpdateWrongGroupId) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  ENTRY AsyncStartAndAsyncUpdateAndAsyncDone {
+    p0 = f32[2,3]{1,0:S(1)} parameter(0)
+    async-start = ((f32[2,3]{1,0:S(1)}), f32[2,3]{1,0:S(2)}, u32[]) custom-call-start(p0), async_group_id=0, custom_call_target="foo"
+    async-update.1 = ((f32[2,3]{1,0:S(1)}), f32[2,3]{1,0:S(2)}, u32[]) custom-call-update(async-start), custom_call_target="foo"
+    async-update.2 = ((f32[2,3]{1,0:S(1)}), f32[2,3]{1,0:S(2)}, u32[]) custom-call-update(async-update.1), async_group_id=0, custom_call_target="foo"
+    ROOT async-done = f32[2,3]{1,0:S(2)} custom-call-done(async-update.2), async_group_id=0, custom_call_target="foo"
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("async-update expects its operand to have the same "
+                        "group id (none vs 0)."));
 }
 
 TEST_F(HloVerifierTest, IotaNonArrayResult) {
@@ -850,8 +1377,9 @@ TEST_F(HloVerifierTestAllowMixedPrecision, ReduceOperandComputationMismatch) {
   ASSERT_TRUE(status.ok());
 }
 
-string ReplicaGroupsStr(std::vector<std::vector<int64>> replica_groups) {
-  std::vector<string> replica_group_strs;
+std::string ReplicaGroupsStr(std::vector<std::vector<int64_t>> replica_groups) {
+  std::vector<std::string> replica_group_strs;
+  replica_group_strs.reserve(replica_groups.size());
   for (const auto& g : replica_groups) {
     replica_group_strs.push_back(
         absl::StrFormat("{%s}", absl::StrJoin(g, ",")));
@@ -859,8 +1387,37 @@ string ReplicaGroupsStr(std::vector<std::vector<int64>> replica_groups) {
   return absl::StrFormat("{%s}", absl::StrJoin(replica_group_strs, ", "));
 }
 
+int64_t ReplicaCount(const std::vector<std::vector<int64_t>>& replica_groups) {
+  int64_t replica_count = 0;
+  for (auto group : replica_groups) {
+    replica_count += group.size();
+  }
+  return replica_count;
+}
+
+StatusOr<std::unique_ptr<HloModule>> MakeCollectiveCommOpComputation(
+    std::vector<std::vector<int64_t>> replica_groups,
+    std::optional<int64_t> replica_count, std::optional<int64_t> num_partitions,
+    absl::string_view other_attributes, absl::string_view template_str) {
+  HloModuleConfig config;
+  config.set_replica_count(
+      replica_count.value_or(ReplicaCount(replica_groups)));
+  config.set_num_partitions(num_partitions.value_or(1));
+  return ParseAndReturnUnverifiedModule(
+      absl::StrReplaceAll(
+          template_str,
+          {{"REPLICA_GROUPS", ReplicaGroupsStr(replica_groups)},
+           {"OTHER_ATTRIBUTES", other_attributes.empty()
+                                    ? ""
+                                    : absl::StrCat(",", other_attributes)}}),
+      config);
+}
+
 StatusOr<std::unique_ptr<HloModule>> MakeAllReduceComputation(
-    std::vector<std::vector<int64>> replica_groups) {
+    std::vector<std::vector<int64_t>> replica_groups,
+    std::optional<int64_t> replica_count = std::nullopt,
+    std::optional<int64_t> num_partitions = std::nullopt,
+    absl::string_view other_attributes = "") {
   const char* kTemplate = R"(
   HloModule test
   add {
@@ -871,9 +1428,11 @@ StatusOr<std::unique_ptr<HloModule>> MakeAllReduceComputation(
   ENTRY entry {
     p = f32[128]{0} parameter(0)
     crs = f32[128]{0} all-reduce(p), to_apply=add, replica_groups=REPLICA_GROUPS
+                                     OTHER_ATTRIBUTES
   })";
-  return ParseAndReturnUnverifiedModule(absl::StrReplaceAll(
-      kTemplate, {{"REPLICA_GROUPS", ReplicaGroupsStr(replica_groups)}}));
+  return MakeCollectiveCommOpComputation(replica_groups, replica_count,
+                                         num_partitions, other_attributes,
+                                         kTemplate);
 }
 
 TEST_F(HloVerifierTest, AllReduce_NoReplicaGroupsOK) {
@@ -907,9 +1466,59 @@ TEST_F(HloVerifierTest, AllReduce_MissingReplicaId) {
               HasSubstr("Replica 4 is not named"));
 }
 
-StatusOr<std::unique_ptr<HloModule>> MakeAllToAllComputation(
-    std::vector<std::vector<int64>> replica_groups) {
-  const char* kTemplate = R"(
+TEST_F(HloVerifierTest, AllReduce_NotEnougReplicasInGroupConfig) {
+  TF_ASSERT_OK_AND_ASSIGN(auto module, MakeAllReduceComputation({{0, 1}}, 8));
+  EXPECT_THAT(verifier().Run(module.get()).status().error_message(),
+              HasSubstr("In kCrossReplica mode, replica groups should contain "
+                        "8 replicas, but found 2"));
+}
+
+TEST_F(HloVerifierTest, AllReduce_TooManyReplicasInGroupConfig) {
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          MakeAllReduceComputation({{0, 1}, {2, 3}}, 2));
+  EXPECT_THAT(verifier().Run(module.get()).status().error_message(),
+              HasSubstr("In kCrossReplica mode, replica groups should contain "
+                        "2 replicas, but found 4"));
+}
+
+TEST_F(HloVerifierTest, AllReduce_CrossReplicaAndPartition_Invalid) {
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto module,
+      MakeAllReduceComputation({{0, 1}, {2, 3}}, 2, 1, "channel_id=1"));
+  EXPECT_THAT(
+      verifier().Run(module.get()).status().error_message(),
+      HasSubstr(
+          "In kCrossReplicaAndPartition mode, replica groups should contain "
+          "2 replicas, but found 4"));
+}
+
+TEST_F(HloVerifierTest, AllReduce_CrossReplicaAndPartition_Valid) {
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto module,
+      MakeAllReduceComputation({{0, 1}, {2, 3}}, 4, 1, "channel_id=1"));
+  TF_ASSERT_OK(verifier().Run(module.get()).status());
+}
+
+TEST_F(HloVerifierTest, AllReduce_FlattenedID_Invalid) {
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto module,
+      MakeAllReduceComputation({{0, 1}, {2, 3}}, 1, 2,
+                               "channel_id=1, use_global_device_ids=true"));
+  EXPECT_THAT(verifier().Run(module.get()).status().error_message(),
+              HasSubstr("In kFlattenedID mode, replica groups should contain "
+                        "2 flattened IDs, but found 4"));
+}
+
+TEST_F(HloVerifierTest, AllReduce_FlattenedID_Valid) {
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto module,
+      MakeAllReduceComputation({{0, 1}, {2, 3}}, 2, 2,
+                               "channel_id=1, use_global_device_ids=true"));
+  TF_ASSERT_OK(verifier().Run(module.get()).status());
+}
+
+TEST_F(HloVerifierTest, AllReduceStartAndDone) {
+  const char* const kModuleStr = R"(
   HloModule test
   add {
     x = f32[] parameter(0)
@@ -917,12 +1526,102 @@ StatusOr<std::unique_ptr<HloModule>> MakeAllToAllComputation(
     ROOT add = f32[] add(x, y)
   }
   ENTRY entry {
+    p0 = f32[2,3] parameter(0)
+    start = f32[2,3] all-reduce-start(p0), to_apply=add
+    ROOT done = f32[2,3] all-reduce-done(start)
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          ParseAndReturnUnverifiedModule(kModuleStr));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_TRUE(status.ok());
+}
+
+TEST_F(HloVerifierTest, AllReduceStartAndDoneWrongType) {
+  const char* const kModuleStr = R"(
+  HloModule test
+  add {
+    x = f32[] parameter(0)
+    y = f32[] parameter(1)
+    ROOT add = f32[] add(x, y)
+  }
+  ENTRY entry {
+    p0 = f32[2,3] parameter(0)
+    start = (f32[2,3], f32[2,3]) all-reduce-start(p0), to_apply=add
+    ROOT done = f32[2,3] all-reduce-done(start)
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          ParseAndReturnUnverifiedModule(kModuleStr));
+
+  auto status = verifier().Run(module.get()).status();
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("Expected instruction to have shape equal to "
+                        "f32[2,3]"));
+}
+
+TEST_F(HloVerifierTest, AllReduceStartAndMultipleDone) {
+  const char* const kModuleStr = R"(
+  HloModule test
+  add {
+    x = f32[] parameter(0)
+    y = f32[] parameter(1)
+    ROOT add = f32[] add(x, y)
+  }
+  ENTRY entry {
+    p0 = f32[2,3] parameter(0)
+    start = (f32[2,3], f32[2,3]) all-reduce-start(p0), to_apply=add
+    done1 = f32[2,3] all-reduce-done(start)
+    ROOT done2 = f32[2,3] all-reduce-done(start)
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          ParseAndReturnUnverifiedModule(kModuleStr));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(
+      status.error_message(),
+      HasSubstr("all-reduce-start instruction requires one consumer, found 2"));
+}
+
+TEST_F(HloVerifierTest, AllReduceDoneWithoutStart) {
+  const char* const kModuleStr = R"(
+  HloModule test
+  ENTRY entry {
+    p0 = f32[2,3] parameter(0)
+    p1 = u32[] parameter(1)
+    tuple = (f32[2,3], f32[2,3]) tuple(p0, p0, p1, p1)
+    ROOT done = f32[2,3] all-reduce-done(tuple)
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          ParseAndReturnUnverifiedModule(kModuleStr));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("The operand of a all-reduce-done instruction "
+                        "needs to be all-reduce-start, found tuple"));
+}
+
+StatusOr<std::unique_ptr<HloModule>> MakeAllToAllComputation(
+    std::vector<std::vector<int64_t>> replica_groups,
+    std::optional<int64_t> replica_count = std::nullopt,
+    std::optional<int64_t> num_partitions = std::nullopt,
+    absl::string_view other_attributes = "") {
+  const char* kTemplate = R"(
+  HloModule test
+  ENTRY entry {
     p0 = f32[128]{0} parameter(0)
     p1 = f32[128]{0} parameter(1)
     a2a = (f32[128], f32[128]) all-to-all(p0, p1), replica_groups=REPLICA_GROUPS
+                                                   OTHER_ATTRIBUTES
   })";
-  return ParseAndReturnUnverifiedModule(absl::StrReplaceAll(
-      kTemplate, {{"REPLICA_GROUPS", ReplicaGroupsStr(replica_groups)}}));
+  return MakeCollectiveCommOpComputation(replica_groups, replica_count,
+                                         num_partitions, other_attributes,
+                                         kTemplate);
 }
 
 TEST_F(HloVerifierTest, AllToAll_NoReplicaGroupsOK) {
@@ -933,7 +1632,7 @@ TEST_F(HloVerifierTest, AllToAll_NoReplicaGroupsOK) {
 TEST_F(HloVerifierTest, AllToAll_EmptyReplicaGroup) {
   TF_ASSERT_OK_AND_ASSIGN(auto module, MakeAllToAllComputation({{0, 1}, {}}));
   EXPECT_THAT(verifier().Run(module.get()).status().error_message(),
-              HasSubstr("empty replica group"));
+              HasSubstr("cannot have an empty replica group"));
 }
 
 TEST_F(HloVerifierTest, AllToAll_RepeatedReplicaId) {
@@ -950,11 +1649,45 @@ TEST_F(HloVerifierTest, AllToAll_MissingReplicaId) {
               HasSubstr("Replica 4 is not named"));
 }
 
-TEST_F(HloVerifierTest, AllToAll_WrongNumberOfReplicasInGroup) {
+TEST_F(HloVerifierTest, AllToAll_UniformSizeOfReplicasInGroup) {
   TF_ASSERT_OK_AND_ASSIGN(auto module,
                           MakeAllToAllComputation({{0, 1}, {2}, {3, 4}}));
   EXPECT_THAT(verifier().Run(module.get()).status().error_message(),
-              HasSubstr("Replica group has size 1"));
+              HasSubstr("Replica groups expected to be of uniform size"));
+}
+
+TEST_F(HloVerifierTest, AllToAll_CrossPartition_Invalid) {
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto module,
+      MakeAllToAllComputation({{0, 1}, {2, 3}}, 1, 2, "channel_id=1"));
+  EXPECT_THAT(verifier().Run(module.get()).status().error_message(),
+              HasSubstr("In kCrossPartition mode, replica groups should "
+                        "contain 2 partitions, but found 4"));
+}
+
+TEST_F(HloVerifierTest, AllToAll_CrossPartition_Valid) {
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto module,
+      MakeAllToAllComputation({{0, 1}, {2, 3}}, 1, 4, "channel_id=1"));
+  TF_ASSERT_OK(verifier().Run(module.get()).status());
+}
+
+TEST_F(HloVerifierTest, AllToAll_LayoutConstrained) {
+  const char* const kModuleStr = R"(
+  HloModule test
+  ENTRY entry {
+    p0 = f32[128,4]{0,1} parameter(0)
+    p1 = f32[128,4]{1,0} parameter(1)
+    ROOT a2a = (f32[128,4]{0,1}, f32[128,4]{1,0}) all-to-all(p0, p1),
+      replica_groups={{0,1}}
+  }
+  )";
+  HloModuleConfig config;
+  config.set_replica_count(2);
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(kModuleStr, config));
+  EXPECT_THAT(verifier().Run(module.get()).status().error_message(),
+              HasSubstr("HLO all-to-all has operands with different shapes"));
 }
 
 TEST_F(HloVerifierTest, CollectivePermuteSameSourceTwice) {
@@ -966,8 +1699,10 @@ TEST_F(HloVerifierTest, CollectivePermuteSameSourceTwice) {
       source_target_pairs={{0,1}, {0,2}, {1,0}}
   }
   )";
+  HloModuleConfig config;
+  config.set_replica_count(3);
   TF_ASSERT_OK_AND_ASSIGN(auto module,
-                          ParseAndReturnUnverifiedModule(kModuleStr));
+                          ParseAndReturnUnverifiedModule(kModuleStr, config));
   EXPECT_THAT(verifier().Run(module.get()).status().error_message(),
               HasSubstr("Source 0 appears more than once"));
 }
@@ -987,6 +1722,214 @@ TEST_F(HloVerifierTest, CollectivePermuteSameTargetTwice) {
               HasSubstr("Target 2 appears more than once"));
 }
 
+TEST_F(HloVerifierTest, CollectivePermuteSameSourceTooManyTimes) {
+  const char* const kModuleStr = R"(
+  HloModule test
+  ENTRY entry {
+    replica_id = u32[] replica-id()
+    broadcast.0 = u32[2,8,128]{2,1,0:T(2,128)} broadcast(u32[] replica_id), dimensions={}
+    constant.1 = u32[] constant(1000)
+    broadcast.1 = u32[2,8,128]{2,1,0:T(2,128)} broadcast(u32[] constant.1), dimensions={}
+    constant.2 = s32[] constant(0)
+    constant.3 = s32[] constant(1)
+    tuple.2 = (s32[],s32[],s32[]) tuple(constant.2, constant.2, constant.2)
+    tuple.3 = (s32[],s32[],s32[]) tuple(constant.3, constant.2, constant.2)
+    tuple.4 = ((s32[],s32[],s32[]), (s32[],s32[],s32[])) tuple((s32[],s32[],s32[]) tuple.2, (s32[],s32[],s32[]) tuple.3)
+    ROOT collective-permute = u32[2,8,128]{2,1,0:T(2,128)} collective-permute(u32[2,8,128] broadcast.0, u32[2,8,128] broadcast.1, ((s32[],s32[],s32[]), (s32[],s32[],s32[])) tuple.4, ((s32[],s32[],s32[]), (s32[],s32[],s32[])) tuple.4), source_target_pairs={{0,1},{1,2},{2,3},{3,0},{0,3},{0,2},{2,1},{1,0}}, slice_sizes={{1,8,128},{1,8,128}}
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(kModuleStr));
+  EXPECT_THAT(verifier().Run(module.get()).status().error_message(),
+              HasSubstr("Source 0 appears more than 2 times in instruction's "
+                        "source-target pairs:"));
+}
+
+TEST_F(HloVerifierTest, CollectivePermuteSameTargetTooManyTimes) {
+  const char* const kModuleStr = R"(
+  HloModule test
+  ENTRY entry {
+    replica_id = u32[] replica-id()
+    broadcast.0 = u32[2,8,128]{2,1,0:T(2,128)} broadcast(u32[] replica_id), dimensions={}
+    constant.1 = u32[] constant(1000)
+    broadcast.1 = u32[2,8,128]{2,1,0:T(2,128)} broadcast(u32[] constant.1), dimensions={}
+    constant.2 = s32[] constant(0)
+    constant.3 = s32[] constant(1)
+    tuple.2 = (s32[],s32[],s32[]) tuple(constant.2, constant.2, constant.2)
+    tuple.3 = (s32[],s32[],s32[]) tuple(constant.3, constant.2, constant.2)
+    tuple.4 = ((s32[],s32[],s32[]), (s32[],s32[],s32[])) tuple((s32[],s32[],s32[]) tuple.2, (s32[],s32[],s32[]) tuple.3)
+    ROOT collective-permute = u32[2,8,128]{2,1,0:T(2,128)} collective-permute(u32[2,8,128] broadcast.0, u32[2,8,128] broadcast.1, ((s32[],s32[],s32[]), (s32[],s32[],s32[])) tuple.4, ((s32[],s32[],s32[]), (s32[],s32[],s32[])) tuple.4), source_target_pairs={{0,1},{1,2},{2,3},{3,0},{0,3},{3,2},{2,3},{1,0}}, slice_sizes={{1,8,128},{1,8,128}}
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(kModuleStr));
+  EXPECT_THAT(verifier().Run(module.get()).status().error_message(),
+              HasSubstr("Target 3 appears more than 2 times in instruction's "
+                        "source-target pairs:"));
+}
+
+TEST_F(HloVerifierTest, CollectivePermuteUnmatchingSourceTarget) {
+  const char* const kModuleStr = R"(
+  HloModule test
+  ENTRY entry {
+    replica_id = u32[] replica-id()
+    broadcast.0 = u32[2,8,128]{2,1,0:T(2,128)} broadcast(u32[] replica_id), dimensions={}
+    constant.1 = u32[] constant(1000)
+    broadcast.1 = u32[2,8,128]{2,1,0:T(2,128)} broadcast(u32[] constant.1), dimensions={}
+    broadcast.2 = u32[4,8,128]{2,1,0:T(2,128)} broadcast(u32[] constant.1), dimensions={}
+    constant.2 = s32[] constant(0)
+    constant.3 = s32[] constant(1)
+    tuple.output = (u32[2,8,128]{2,1,0:T(2,128)}, u32[4,8,128]{2,1,0:T(2,128)}) tuple(u32[2,8,128]{2,1,0:T(2,128)} broadcast.1, u32[4,8,128]{2,1,0:T(2,128)} broadcast.2)
+    tuple.2 = (s32[],s32[],s32[]) tuple(constant.2, constant.2, constant.2)
+    tuple.3 = (s32[],s32[],s32[]) tuple(constant.3, constant.2, constant.2)
+    tuple.4 = ((s32[],s32[],s32[]), (s32[],s32[],s32[])) tuple((s32[],s32[],s32[]) tuple.2, (s32[],s32[],s32[]) tuple.3)
+    constant.4 = s32[] constant(2)
+    tuple.5 = (s32[],s32[],s32[]) tuple(constant.4, constant.2, constant.2)
+    tuple.6 = ((s32[],s32[],s32[]), (s32[],s32[],s32[])) tuple((s32[],s32[],s32[]) tuple.2, (s32[],s32[],s32[]) tuple.5)
+    tuple.9 = (((s32[],s32[],s32[]), (s32[],s32[],s32[])), ((s32[],s32[],s32[]), (s32[],s32[],s32[]))) tuple(((s32[],s32[],s32[]), (s32[],s32[],s32[])) tuple.4, ((s32[],s32[],s32[]), (s32[],s32[],s32[])) tuple.6)
+    ROOT collective-permute.53 = (u32[2,8,128]{2,1,0:T(2,128)}, u32[4,8,128]{2,1,0:T(2,128)}) collective-permute(u32[2,8,128]{2,1,0:T(2,128)} broadcast.0, (u32[2,8,128]{2,1,0:T(2,128)}, u32[4,8,128]{2,1,0:T(2,128)}) tuple.output, ((s32[],s32[],s32[]), (s32[],s32[],s32[])) tuple.4, (((s32[],s32[],s32[]), (s32[],s32[],s32[])), ((s32[],s32[],s32[]), (s32[],s32[],s32[]))) tuple.9), source_target_pairs={{0,1},{1,2},{2,3},{3,0},{0,3},{3,2},{2,1},{1,0}}, slice_sizes={{1,8,128},{1,8,128},{2,8,128},{2,8,128}}
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(kModuleStr));
+  EXPECT_THAT(verifier().Run(module.get()).status().error_message(),
+              HasSubstr("Unmatching input buffers and output buffers"));
+}
+
+TEST_F(HloVerifierTest, CollectivePermuteUnmatchingInputAndInputOffset) {
+  const char* const kModuleStr = R"(
+  HloModule test
+  ENTRY entry {
+    replica_id = u32[] replica-id()
+    broadcast.0 = u32[2,8,128]{2,1,0:T(2,128)} broadcast(u32[] replica_id), dimensions={}
+    constant.1 = u32[] constant(1000)
+    broadcast.1 = u32[2,8,128]{2,1,0:T(2,128)} broadcast(u32[] constant.1), dimensions={}
+    broadcast.2 = u32[4,8,128]{2,1,0:T(2,128)} broadcast(u32[] constant.1), dimensions={}
+    constant.2 = s32[] constant(0)
+    constant.3 = s32[] constant(1)
+    tuple.input = (u32[2,8,128]{2,1,0:T(2,128)}, u32[2,8,128]{2,1,0:T(2,128)}) tuple(u32[2,8,128]{2,1,0:T(2,128)} broadcast.0, u32[2,8,128]{2,1,0:T(2,128)} broadcast.0)
+    tuple.output = (u32[2,8,128]{2,1,0:T(2,128)}, u32[4,8,128]{2,1,0:T(2,128)}) tuple(u32[2,8,128]{2,1,0:T(2,128)} broadcast.1, u32[4,8,128]{2,1,0:T(2,128)} broadcast.2)
+    tuple.2 = (s32[],s32[],s32[]) tuple(constant.2, constant.2, constant.2)
+    tuple.3 = (s32[],s32[],s32[]) tuple(constant.3, constant.2, constant.2)
+    tuple.4 = ((s32[],s32[],s32[]), (s32[],s32[],s32[])) tuple((s32[],s32[],s32[]) tuple.2, (s32[],s32[],s32[]) tuple.3)
+    constant.4 = s32[] constant(2)
+    tuple.5 = (s32[],s32[],s32[]) tuple(constant.4, constant.2, constant.2)
+    tuple.6 = ((s32[],s32[],s32[]), (s32[],s32[],s32[])) tuple((s32[],s32[],s32[]) tuple.2, (s32[],s32[],s32[]) tuple.5)
+    tuple.9 = (((s32[],s32[],s32[]), (s32[],s32[],s32[])), ((s32[],s32[],s32[]), (s32[],s32[],s32[]))) tuple(((s32[],s32[],s32[]), (s32[],s32[],s32[])) tuple.4, ((s32[],s32[],s32[]), (s32[],s32[],s32[])) tuple.6)
+    ROOT collective-permute.53 = (u32[2,8,128]{2,1,0:T(2,128)}, u32[4,8,128]{2,1,0:T(2,128)}) collective-permute((u32[2,8,128]{2,1,0:T(2,128)}, u32[2,8,128]{2,1,0:T(2,128)}) tuple.input, (u32[2,8,128]{2,1,0:T(2,128)}, u32[4,8,128]{2,1,0:T(2,128)}) tuple.output, (s32[],s32[],s32[]) tuple.3, (((s32[],s32[],s32[]), (s32[],s32[],s32[])), ((s32[],s32[],s32[]), (s32[],s32[],s32[]))) tuple.9), source_target_pairs={{0,1},{1,2},{2,3},{3,0},{0,3},{3,2},{2,1},{1,0}}, slice_sizes={{1,8,128},{1,8,128},{2,8,128},{2,8,128}}
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(kModuleStr));
+  EXPECT_THAT(verifier().Run(module.get()).status().error_message(),
+              HasSubstr("Unmatching input buffers and input offset."));
+}
+
+TEST_F(HloVerifierTest, CollectivePermuteUnmatchingOutputAndOutputOffset) {
+  const char* const kModuleStr = R"(
+  HloModule test
+  ENTRY entry {
+    replica_id = u32[] replica-id()
+      broadcast.0 = u32[2,8,128]{2,1,0:T(2,128)} broadcast(u32[] replica_id), dimensions={}
+      constant.1 = u32[] constant(1000)
+      broadcast.1 = u32[2,8,128]{2,1,0:T(2,128)} broadcast(u32[] constant.1), dimensions={}
+      broadcast.2 = u32[4,8,128]{2,1,0:T(2,128)} broadcast(u32[] constant.1), dimensions={}
+      constant.2 = s32[] constant(0)
+      constant.3 = s32[] constant(1)
+      tuple.input = (u32[2,8,128]{2,1,0:T(2,128)}, u32[2,8,128]{2,1,0:T(2,128)}) tuple(u32[2,8,128]{2,1,0:T(2,128)} broadcast.0, u32[2,8,128]{2,1,0:T(2,128)} broadcast.0)
+      tuple.output = (u32[2,8,128]{2,1,0:T(2,128)}, u32[4,8,128]{2,1,0:T(2,128)}) tuple(u32[2,8,128]{2,1,0:T(2,128)} broadcast.1, u32[4,8,128]{2,1,0:T(2,128)} broadcast.2)
+      tuple.2 = (s32[],s32[],s32[]) tuple(constant.2, constant.2, constant.2)
+      tuple.3 = (s32[],s32[],s32[]) tuple(constant.3, constant.2, constant.2)
+      tuple.4 = ((s32[],s32[],s32[]), (s32[],s32[],s32[])) tuple((s32[],s32[],s32[]) tuple.2, (s32[],s32[],s32[]) tuple.3)
+      constant.4 = s32[] constant(2)
+      tuple.5 = (s32[],s32[],s32[]) tuple(constant.4, constant.2, constant.2)
+      tuple.7 = ((s32[],s32[],s32[]), (s32[],s32[],s32[])) tuple((s32[],s32[],s32[]) tuple.2, (s32[],s32[],s32[]) tuple.2)
+      tuple.8 = (((s32[],s32[],s32[]), (s32[],s32[],s32[])), ((s32[],s32[],s32[]), (s32[],s32[],s32[]))) tuple(((s32[],s32[],s32[]), (s32[],s32[],s32[])) tuple.4, ((s32[],s32[],s32[]), (s32[],s32[],s32[])) tuple.7)
+      ROOT collective-permute.53 = (u32[2,8,128]{2,1,0:T(2,128)}, u32[4,8,128]{2,1,0:T(2,128)}) collective-permute((u32[2,8,128]{2,1,0:T(2,128)}, u32[2,8,128]{2,1,0:T(2,128)}) tuple.input, (u32[2,8,128]{2,1,0:T(2,128)}, u32[4,8,128]{2,1,0:T(2,128)}) tuple.output, (((s32[],s32[],s32[]), (s32[],s32[],s32[])), ((s32[],s32[],s32[]), (s32[],s32[],s32[]))) tuple.8, (s32[],s32[],s32[]) tuple.2), source_target_pairs={{0,1},{1,2},{2,3},{3,0},{0,3},{3,2},{2,1},{1,0}}, slice_sizes={{1,8,128},{1,8,128},{2,8,128},{2,8,128}}
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(kModuleStr));
+  EXPECT_THAT(verifier().Run(module.get()).status().error_message(),
+              HasSubstr("Unmatching output buffers and output offset."));
+}
+
+TEST_F(HloVerifierTest, CollectivePermuteCrossReplicaSourceOOR) {
+  const char* const kModuleStr = R"(
+  HloModule test
+  ENTRY entry {
+    p0 = f32[128] parameter(0)
+    ROOT permute = f32[128] collective-permute(p0),
+      source_target_pairs={{5,2}, {1,2}, {2,0}}
+  }
+  )";
+  HloModuleConfig config;
+  config.set_replica_count(3);
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(kModuleStr, config));
+  const std::string error_message =
+      verifier().Run(module.get()).status().error_message();
+  EXPECT_THAT(error_message, HasSubstr("Source 5"));
+  EXPECT_THAT(error_message, HasSubstr("must be < 3"));
+}
+
+TEST_F(HloVerifierTest, CollectivePermuteCrossReplicaTargetOOR) {
+  const char* const kModuleStr = R"(
+  HloModule test
+  ENTRY entry {
+    p0 = f32[128] parameter(0)
+    ROOT permute = f32[128] collective-permute(p0),
+      source_target_pairs={{0,1}, {1,2}, {2,7}}
+  }
+  )";
+  HloModuleConfig config;
+  config.set_replica_count(3);
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(kModuleStr, config));
+  const std::string error_message =
+      verifier().Run(module.get()).status().error_message();
+  EXPECT_THAT(error_message, HasSubstr("Target 7"));
+  EXPECT_THAT(error_message, HasSubstr("must be < 3"));
+}
+
+TEST_F(HloVerifierTest, CollectivePermuteCrossPartitionSourceOOR) {
+  const char* const kModuleStr = R"(
+  HloModule test
+  ENTRY entry {
+    p0 = f32[128] parameter(0)
+    ROOT permute = f32[128] collective-permute(p0),
+      source_target_pairs={{5,2}, {1,2}, {2,0}}, channel_id=1
+  }
+  )";
+  HloModuleConfig config;
+  config.set_num_partitions(3);
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(kModuleStr, config));
+  const std::string error_message =
+      verifier().Run(module.get()).status().error_message();
+  EXPECT_THAT(error_message, HasSubstr("Source 5"));
+  EXPECT_THAT(error_message, HasSubstr("must be < 3"));
+}
+
+TEST_F(HloVerifierTest, CollectivePermuteCrossPartitionTargetOOR) {
+  const char* const kModuleStr = R"(
+  HloModule test
+  ENTRY entry {
+    p0 = f32[128] parameter(0)
+    ROOT permute = f32[128] collective-permute(p0),
+      source_target_pairs={{0,2}, {1,7}, {2,0}}, channel_id=1
+  }
+  )";
+  HloModuleConfig config;
+  config.set_num_partitions(3);
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(kModuleStr, config));
+  const std::string error_message =
+      verifier().Run(module.get()).status().error_message();
+  EXPECT_THAT(error_message, HasSubstr("Target 7"));
+  EXPECT_THAT(error_message, HasSubstr("must be < 3"));
+}
+
 TEST_F(HloVerifierTest, FusionShapeVerifier) {
   const char* const kModuleStr = R"(
   HloModule test
@@ -1004,6 +1947,56 @@ TEST_F(HloVerifierTest, FusionShapeVerifier) {
                           ParseAndReturnUnverifiedModule(kModuleStr));
   EXPECT_THAT(verifier().Run(module.get()).status().error_message(),
               HasSubstr("Fused computation shape"));
+}
+
+TEST_F(HloVerifierTest, FusionThreadVerifier) {
+  const char* const kModuleStr = R"(
+  HloModule test
+
+  fused_computation {
+    ROOT p0 = f32[8,12] parameter(0)
+  }, execution_thread="parallel_thread"
+
+  ENTRY entry {
+    p0 = f32[8,12] parameter(0)
+    ROOT out = f32[8,12] fusion(p0), kind=kInput, calls=fused_computation
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(kModuleStr));
+  EXPECT_THAT(verifier().Run(module.get()).status().error_message(),
+              HasSubstr("expects parent computation thread name same as called "
+                        "computation's thread name"));
+}
+
+TEST_F(HloVerifierTest, FusionNestedComputationThreadVerifier) {
+  const char* const kModuleStr = R"(
+  HloModule test
+
+  add {
+    lhs = f32[] parameter(0)
+    rhs = f32[] parameter(1)
+    ROOT add = f32[] add(lhs, rhs)
+  }, execution_thread="parallel_thread"
+
+  fused_computation {
+    p0 = f32[8,12] parameter(0)
+    p1 = f32[8,12] parameter(1)
+    crs0 = f32[8,12] all-reduce(p1), replica_groups={}, to_apply=add
+    ROOT result = add(p0, crs0)
+  }
+
+  ENTRY entry {
+    p0 = f32[8,12] parameter(0)
+    p1 = f32[8,12] parameter(1)
+    ROOT out = f32[8,12] fusion(p0, p1), kind=kInput, calls=fused_computation
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(kModuleStr));
+  EXPECT_THAT(
+      verifier().Run(module.get()).status().error_message(),
+      HasSubstr("Nested computations expects same computation's thread name"));
 }
 
 TEST_F(HloVerifierTest, AllReduceVerifier) {
@@ -1080,6 +2073,470 @@ TEST_F(HloVerifierTest, CollectiveChannelVerifier) {
                           ParseAndReturnUnverifiedModule(kModuleStr));
   EXPECT_THAT(verifier().Run(module.get()).status().error_message(),
               HasSubstr("used for different types of channel instructions"));
+}
+
+TEST_F(HloVerifierTestLayoutSensitive, CollectivePermuteStartAndDone) {
+  const char* const kModuleStr = R"(
+  HloModule Module
+
+  ENTRY CollectivePermuteStartAndDone {
+    p0 = f32[2,3]{1,0:S(1)} parameter(0)
+    collective-permute-start.1 = (f32[2,3]{1,0:S(1)}, f32[2,3]{1,0:S(1)}, u32[], u32[]) collective-permute-start(p0), source_target_pairs={{0,1},{1,0}}, channel_id=1
+    ROOT collective-permute-done.1 = f32[2,3]{1,0:S(1)} collective-permute-done(collective-permute-start.1)
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(kModuleStr));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_TRUE(status.ok());
+}
+
+TEST_F(HloVerifierTest, CollectivePermuteStartAndDoneWrongType) {
+  const char* const kModuleStr = R"(
+  HloModule Module
+
+  ENTRY CollectivePermuteStartAndDoneWrongType {
+    p0 = f32[2,3]{1,0:S(1)} parameter(0)
+    collective-permute-start.1 = f32[2,3]{1,0:S(1)} collective-permute-start(p0), source_target_pairs={{0,1},{1,0}}, channel_id=1
+    ROOT collective-permute-done.1 = f32[2,3]{1,0:S(1)} collective-permute-done(collective-permute-start.1)
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(kModuleStr));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("Expected instruction to have shape equal to "
+                        "(f32[2,3], f32[2,3], u32[], u32[])"));
+}
+
+TEST_F(HloVerifierTest, CollectivePermuteStartAndMultipleDone) {
+  const char* const kModuleStr = R"(
+  HloModule Module
+
+  ENTRY CollectivePermuteStartAndMultipleDone {
+    p0 = f32[2,3]{1,0:S(1)} parameter(0)
+    collective-permute-start.1 = (f32[2,3]{1,0:S(1)}, f32[2,3]{1,0:S(1)}, u32[], u32[]) collective-permute-start(p0), source_target_pairs={{0,1},{1,0}}, channel_id=1
+    collective-permute-done.1 = f32[2,3]{1,0:S(1)} collective-permute-done(collective-permute-start.1)
+    ROOT collective-permute-done.2 = f32[2,3]{1,0:S(1)} collective-permute-done(collective-permute-start.1)
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(kModuleStr));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(
+      status.error_message(),
+      HasSubstr("collective-permute-start instruction requires one consumer, "
+                "found 2"));
+}
+
+TEST_F(HloVerifierTest, CollectivePermuteDoneNoCollectivePermuteStart) {
+  const char* const kModuleStr = R"(
+  HloModule Module
+
+  ENTRY CollectivePermuteDoneNoCollectivePermuteStart {
+    p0 = f32[2,3]{1,0:S(1)} parameter(0)
+    p1 = f32[2,3]{1,0:S(1)} parameter(1)
+    p2 = u32[] parameter(2)
+    p3 = u32[] parameter(3)
+    tuple.1 = (f32[2,3], f32[2,3], u32[], u32[]) tuple(p0, p1, p2, p3)
+    ROOT collective-permute-done.1 = f32[2,3]{1,0:S(1)} collective-permute-done(tuple.1)
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(kModuleStr));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("The operand of a collective-permute-done instruction "
+                        "needs to be collective-permute-start, found tuple"));
+}
+
+TEST_F(HloVerifierTest, ComparisonTypeFloat) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  ENTRY RngOperandElementTypesNotMatch {
+   p0 = f32[] parameter(0)
+   ROOT cmp = pred[] compare(f32[] p0, f32[] p0), direction=LT, type=UNSIGNED
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("Expected comparison type FLOAT or TOTALORDER"));
+}
+
+TEST_F(HloVerifierTest, ComparisonTypeSigned) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  ENTRY RngOperandElementTypesNotMatch {
+   p0 = s32[] parameter(0)
+   ROOT cmp = pred[] compare(s32[] p0, s32[] p0), direction=LT, type=UNSIGNED
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("Expected comparison type SIGNED"));
+}
+
+TEST_F(HloVerifierTest, ComparisonTypeUnsigned) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  ENTRY RngOperandElementTypesNotMatch {
+   p0 = u32[] parameter(0)
+   ROOT cmp = pred[] compare(u32[] p0, u32[] p0), direction=LT, type=SIGNED
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("Expected comparison type UNSIGNED"));
+}
+
+TEST_F(HloVerifierTest, ComparisonTypePred) {
+  const char* const hlo_string = R"(
+  HloModule Module
+
+  ENTRY RngOperandElementTypesNotMatch {
+   p0 = pred[] parameter(0)
+   ROOT cmp = pred[] compare(pred[] p0, pred[] p0), direction=LT, type=SIGNED
+  }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("Expected comparison type UNSIGNED"));
+}
+
+TEST_F(HloVerifierTest, UseGlobalDeviceIdsEmptyReplicaGroup) {
+  const char* const hlo_string = R"(
+  HloModule Module
+  add {
+    lhs = f32[] parameter(0)
+    rhs = f32[] parameter(1)
+    ROOT add = f32[] add(lhs, rhs)
+  }
+
+  ENTRY CRS {
+    input = f32[8]{0} parameter(0)
+    ROOT crs = f32[8]{0} all-reduce(input), replica_groups={}, channel_id=1,
+                         use_global_device_ids=true, to_apply=add
+  })";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(
+      status.error_message(),
+      HasSubstr("Replica groups must be specified in flattened-id mode"));
+}
+
+TEST_F(HloVerifierTest, InvalidChannelIDandUseGlobalDeviceIDs) {
+  const char* const hlo_string = R"(
+  HloModule Module
+  add {
+    lhs = f32[] parameter(0)
+    rhs = f32[] parameter(1)
+    ROOT add = f32[] add(lhs, rhs)
+  }
+
+  ENTRY CRS {
+    input = f32[8]{0} parameter(0)
+    ROOT crs = f32[8]{0} all-reduce(input), replica_groups={},
+                         use_global_device_ids=true, to_apply=add
+  })";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(
+      status.error_message(),
+      HasSubstr(
+          "Invalid combination of has_channel_id and use_global_device_ids"));
+}
+
+TEST_F(HloVerifierTest, ReduceScatterInvalidOutputSize0) {
+  const char* const hlo_string = R"(
+  HloModule Module
+  add {
+    lhs = f32[] parameter(0)
+    rhs = f32[] parameter(1)
+    ROOT add = f32[] add(lhs, rhs)
+  }
+
+  ENTRY CRS {
+    input = f32[8]{0} parameter(0)
+    ROOT crs = f32[8]{0} reduce-scatter(input), replica_groups={{0,1}},
+                         to_apply=add, dimensions={0}
+  })";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("shard_count = 1, subgroup_size = 2"));
+}
+
+TEST_F(HloVerifierTest, ReduceScatterInvalidScatterDim) {
+  const char* const hlo_string = R"(
+  HloModule Module
+  add {
+    lhs = f32[] parameter(0)
+    rhs = f32[] parameter(1)
+    ROOT add = f32[] add(lhs, rhs)
+  }
+
+  ENTRY CRS {
+    input = f32[8]{0} parameter(0)
+    ROOT crs = f32[4]{0} reduce-scatter(input), replica_groups={{0,1}},
+                         to_apply=add, dimensions={1}
+  })";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(
+      status.error_message(),
+      HasSubstr("ars->scatter_dimension() < ars->operand(i)->shape().rank()"));
+}
+
+TEST_F(HloVerifierTest, ReduceScatterNonUniformGroups) {
+  const char* const hlo_string = R"(
+  HloModule Module
+  add {
+    lhs = f32[] parameter(0)
+    rhs = f32[] parameter(1)
+    ROOT add = f32[] add(lhs, rhs)
+  }
+
+  ENTRY CRS {
+    input = f32[8]{0} parameter(0)
+    ROOT crs = f32[4]{0} reduce-scatter(input), replica_groups={{0,1}, {2,3,4}},
+                         to_apply=add, dimensions={0}
+  })";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("Replica groups expected to be of uniform size"));
+}
+
+TEST_F(HloVerifierTest, VerifyBroadcastDimensionsOrder) {
+  const char* const hlo = R"(
+HloModule module
+
+ENTRY computation {
+  mul = f32[32,32,32]{2,1,0} parameter(0)
+  ROOT broadcast = f32[32,32,32,32]{3,2,1,0} broadcast(mul), dimensions={3,2,1}
+}
+)";
+
+  TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnUnverifiedModule(hlo));
+  auto status = HloVerifier{HloVerifierOpts{}.VerifyBroadcastDimensionsOrder()}
+                    .Run(module.get())
+                    .status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("Broadcast dimensions should be ordered"));
+}
+
+TEST_F(HloVerifierTest, VerifyBroadcastDimensionsOrderOK) {
+  const char* const hlo = R"(
+HloModule module
+
+ENTRY computation {
+  mul = f32[4,5] parameter(0)
+  ROOT broadcast = f32[4,3,2,5] broadcast(mul), dimensions={0,3}
+}
+)";
+
+  TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnUnverifiedModule(hlo));
+  TF_ASSERT_OK(HloVerifier{HloVerifierOpts{}.VerifyBroadcastDimensionsOrder()}
+                   .Run(module.get())
+                   .status());
+}
+
+TEST_F(HloVerifierTest, ReshapeIsNotBitcast) {
+  const char* const hlo = R"(
+HloModule Module
+
+ENTRY main {
+  p = f32[8,3]{1,0} parameter(0)
+  ROOT r = f32[4,2,3]{0,1,2} reshape(p)
+}
+)";
+
+  TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnUnverifiedModule(hlo));
+  auto status =
+      HloVerifier{
+          HloVerifierOpts{}.MakeLayoutSensitive().VerifyReshapeIsBitcast()}
+          .Run(module.get())
+          .status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("Reshape should be a physical bitcast"));
+}
+
+TEST_F(HloVerifierTest, ReshapeIsBitcast) {
+  const char* const hlo = R"(
+HloModule Module
+
+ENTRY main {
+  p = f32[8]{0} parameter(0)
+  ROOT r = f32[4,2]{1,0} reshape(p)
+}
+)";
+
+  TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnUnverifiedModule(hlo));
+  TF_ASSERT_OK(HloVerifier{
+      HloVerifierOpts{}.MakeLayoutSensitive().VerifyReshapeIsBitcast()}
+                   .Run(module.get())
+                   .status());
+}
+
+TEST_F(HloVerifierTest, VerifyCustomCallThread) {
+  const char* const hlo = R"(
+    HloModule module
+    %call_body (prev.2: s32[]) -> pred[] {
+      %constant.1 = s32[] constant(5)
+      %prev.2 = s32[] parameter(0)
+      ROOT %greater-than = pred[] compare(s32[] %constant.1, s32[] %prev.2), direction=GT
+    }, execution_thread="parallel_thread"
+
+    ENTRY %WhileWithScalarS32Result.v2 () -> s32[] {
+      %constant.2 = s32[] constant(0)
+      ROOT %custom = s32[] custom-call(s32[] %constant.2), custom_call_target="MyCustomCall", to_apply=%call_body
+    }
+)";
+
+  TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnUnverifiedModule(hlo));
+  auto status =
+      HloVerifier{
+          HloVerifierOpts{}.VerifyCustomCallNestedComputationThreadName()}
+          .Run(module.get())
+          .status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("expects parent computation thread name same as called "
+                        "computation's thread name"));
+}
+
+TEST_F(HloVerifierTest, CheckWhileThread) {
+  const char* const hlo_string = R"(
+    HloModule While, entry_computation_layout={()->s32[]}
+
+    %body.v3 (prev.1: s32[]) -> s32[] {
+      %constant = s32[] constant(1)
+      %prev.1 = s32[] parameter(0)
+      ROOT %add = s32[] add(s32[] %constant, s32[] %prev.1)
+    }
+
+    %condition.v3 (prev.2: s32[]) -> pred[] {
+      %constant.1 = s32[] constant(5)
+      %prev.2 = s32[] parameter(0)
+      ROOT %greater-than = pred[] compare(s32[] %constant.1, s32[] %prev.2), direction=GT
+    }, execution_thread="parallel_thread"
+
+    ENTRY %WhileWithScalarS32Result.v2 () -> s32[] {
+      %constant.2 = s32[] constant(0)
+      ROOT %while = s32[] while(s32[] %constant.2), condition=%condition.v3, body=%body.v3
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_FALSE(status.ok());
+  EXPECT_THAT(status.error_message(),
+              HasSubstr("expects parent computation thread name same as called "
+                        "computation's thread name"));
+}
+
+TEST_F(HloVerifierTest, CheckWhileContainsAsyncThread) {
+  const char* const hlo_string = R"(
+    HloModule While, entry_computation_layout={()->s32[]}
+
+    %async_add (prev.1: s32[]) -> s32[] {
+      %constant = s32[] constant(1)
+      %prev.1 = s32[] parameter(0)
+      ROOT %add = s32[] add(s32[] %constant, s32[] %prev.1)
+    }, execution_thread="parallel_thread"
+
+    %body.v3 (prev.1: s32[]) -> s32[] {
+      %constant = s32[] constant(1)
+      %prev.1 = s32[] parameter(0)
+      ROOT %add = s32[] add(s32[] %constant, s32[] %prev.1)
+    }
+
+    %condition.v3 (prev.2: s32[]) -> pred[] {
+      %constant.1 = s32[] constant(5)
+      %prev.2 = s32[] parameter(0)
+      %async-start = ((s32[]), s32[], s32[]) custom-call-start(s32[] %prev.2), async_execution_thread="parallel_thread", custom_call_target="async_add"
+      %async-done = s32[] custom-call-done(((s32[]), s32[], s32[]) %async-start), async_execution_thread="parallel_thread", custom_call_target="async_add"
+      ROOT %greater-than = pred[] compare(s32[] %constant.1, s32[] %async-done), direction=GT
+    }
+
+    ENTRY %WhileWithScalarS32Result.v2 () -> s32[] {
+      %constant.2 = s32[] constant(0)
+      ROOT %while = s32[] while(s32[] %constant.2), condition=%condition.v3, body=%body.v3
+    }
+  )";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_TRUE(status.ok());
+}
+
+TEST_F(HloVerifierTestLayoutFusion, DynamicUpdateSliceWithMemorySpace) {
+  const char* const hlo_string = R"(
+HloModule fusion, is_scheduled=true
+
+fused_computation {
+  %parameter.0 = bf16[1,8,1,8,320]{4,0,3,2,1:T(2,128)(2,1)S(3)} parameter(0)
+  %parameter.1 = bf16[1,8,6,8,320]{4,0,3,2,1:T(2,128)(2,1)S(3)} parameter(1)
+  %c = bf16[1,8,6,8,320]{4,0,3,2,1:T(2,128)(2,1)} copy(parameter.1)
+  %constant.1 = s32[] constant(0)
+  ROOT %dynamic-update-slice.1 = bf16[1,8,6,8,320]{4,0,3,2,1:T(2,128)(2,1)S(3)}
+    dynamic-update-slice(%c, %parameter.0, %constant.1, %constant.1,
+    %constant.1, %constant.1, %constant.1)
+}
+
+ENTRY entry (parameter.0: bf16[1,8,1,8,320], parameter.1: bf16[1,8,6,8,320]) -> bf16[1,8,6,8,320]{
+  %p0 = bf16[1,8,1,8,320]{4,0,3,2,1:T(2,128)(2,1)S(3)} parameter(0)
+  %p1 = bf16[1,8,6,8,320]{4,0,3,2,1:T(2,128)(2,1)S(3)} parameter(1)
+  ROOT out = bf16[1,8,6,8,320]{4,0,3,2,1:T(2,128)(2,1)S(3)} fusion(p0, p1), kind=kLoop, calls=fused_computation
+})";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto status = verifier().Run(module.get()).status();
+  ASSERT_TRUE(status.ok());
 }
 
 }  // namespace

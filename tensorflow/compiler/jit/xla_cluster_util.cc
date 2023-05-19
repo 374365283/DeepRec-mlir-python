@@ -15,20 +15,25 @@ limitations under the License.
 
 #include "tensorflow/compiler/jit/xla_cluster_util.h"
 
+#include <string>
 #include <unordered_map>
 
 #include "absl/algorithm/container.h"
-#include "absl/container/flat_hash_map.h"
-#include "absl/container/flat_hash_set.h"
+#include "absl/container/inlined_vector.h"
 #include "absl/strings/match.h"
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "tensorflow/compiler/jit/flags.h"
 #include "tensorflow/compiler/xla/status_macros.h"
+#include "tensorflow/core/common_runtime/function.h"
 #include "tensorflow/core/framework/bounds_check.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/graph/control_flow.h"
+#include "tensorflow/core/lib/gtl/cleanup.h"
+#include "tensorflow/core/lib/strings/proto_serialization.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/fingerprint.h"
 #include "tensorflow/core/public/session_options.h"
 #include "tensorflow/core/util/device_name_utils.h"
 #include "tensorflow/core/util/xla_config_registry.h"
@@ -36,7 +41,6 @@ limitations under the License.
 namespace tensorflow {
 
 const char* const kXlaClusterAttr = "_XlaCluster";
-const char* const kXlaOutsideCompilationAttr = "_XlaOutsideCompilation";
 const char* const kXlaCompileTimeConstantInputsAttr =
     "_XlaCompileTimeConstantInputs";
 
@@ -45,9 +49,9 @@ namespace {
 // create a cycle.
 string DescribeCycle(const GraphCycles* cycles, const Graph& graph, int src,
                      int dst) {
-  int32 max_path_size = graph.num_node_ids() + 1;
+  int32_t max_path_size = graph.num_node_ids() + 1;
   std::vector<int32> path(max_path_size);
-  int32 path_size = cycles->FindPath(dst, src, max_path_size, path.data());
+  int32_t path_size = cycles->FindPath(dst, src, max_path_size, path.data());
   if (path_size == 0) {
     return "";
   }
@@ -67,7 +71,7 @@ string DescribeCycle(const GraphCycles* cycles, const Graph& graph, int src,
   absl::StrAppend(&description, "Edge from ", node_name(src), " to ",
                   node_name(dst), " would create a cycle.\n");
   path.resize(path_size);
-  for (int32 node_id : path) {
+  for (int32_t node_id : path) {
     string ascii_art;
     if (node_id == dst) {
       ascii_art = "+-> ";
@@ -103,8 +107,8 @@ bool HasForwardedRefInput(const Node& node) {
   return false;
 }
 
-xla::StatusOr<bool> CreateCycleDetectionGraph(const Graph* graph,
-                                              GraphCycles* cycles) {
+StatusOr<bool> CreateCycleDetectionGraph(const Graph* graph,
+                                         GraphCycles* cycles) {
   for (int i = 0; i < graph->num_node_ids(); ++i) {
     // We rely on the node IDs in the cycle detection graph being consecutive
     // integers starting from 0.
@@ -193,14 +197,14 @@ xla::StatusOr<bool> CreateCycleDetectionGraph(const Graph* graph,
   return true;
 }
 
-absl::optional<absl::string_view> GetXlaClusterForNode(const Node& node) {
+std::optional<absl::string_view> GetXlaClusterForNode(const Node& node) {
   const AttrValue* attr_value = node.attrs().Find(kXlaClusterAttr);
   if (attr_value == nullptr) {
-    return absl::nullopt;
+    return std::nullopt;
   }
   Status s = AttrValueHasType(*attr_value, "string");
   if (!s.ok()) {
-    return absl::nullopt;
+    return std::nullopt;
   }
   return attr_value->s();
 }
@@ -357,7 +361,7 @@ XlaAutoClusteringSummary GetXlaAutoClusteringSummary(const Graph& graph) {
   absl::flat_hash_map<absl::string_view, int> unclustered_op_histogram;
 
   for (Node* n : graph.nodes()) {
-    absl::optional<absl::string_view> cluster_name = GetXlaClusterForNode(*n);
+    std::optional<absl::string_view> cluster_name = GetXlaClusterForNode(*n);
     if (cluster_name) {
       result.set_clustered_node_count(result.clustered_node_count() + 1);
       ClusterInfo* info = &cluster_name_to_info[*cluster_name];
@@ -384,6 +388,231 @@ XlaAutoClusteringSummary GetXlaAutoClusteringSummary(const Graph& graph) {
                                    unclustered_op_histogram);
 
   return result;
+}
+
+namespace {
+using CallTargetListTy = absl::InlinedVector<NameAttrList, 2>;
+
+CallTargetListTy GetCallTargetListFromNode(
+    const Node& n, FunctionLibraryRuntime* lib_runtime) {
+  const FunctionLibraryDefinition& flib_def =
+      *lib_runtime->GetFunctionLibraryDefinition();
+  if (flib_def.Find(n.type_string())) {
+    NameAttrList callee;
+    callee.set_name(n.type_string());
+    *callee.mutable_attr() = n.def().attr();
+    return {callee};
+  }
+
+  CallTargetListTy result;
+  for (const auto& name_attr_pair : n.attrs()) {
+    const AttrValue& attr_value = name_attr_pair.second;
+    if (attr_value.value_case() == AttrValue::kFunc) {
+      result.push_back(attr_value.func());
+    } else if (attr_value.value_case() == AttrValue::kList) {
+      result.insert(result.end(), attr_value.list().func().begin(),
+                    attr_value.list().func().end());
+    }
+  }
+
+  return result;
+}
+
+enum class Direction { kForward, kBackward };
+
+Status GetNodesRelatedToRefVariablesInDirection(
+    const Graph& graph, FunctionLibraryRuntime* lib_runtime,
+    Direction direction, int depth, absl::flat_hash_set<Node*>* result);
+
+StatusOr<bool> DoesAnyCalleeHaveRefNodes(
+    const CallTargetListTy& call_target_list,
+    FunctionLibraryRuntime* lib_runtime, Direction direction, int depth) {
+  const int kMaxDepth = 10;
+
+  if (depth == kMaxDepth && !call_target_list.empty()) {
+    // Conservative answer to avoid recursing too much.
+    return true;
+  }
+
+  absl::flat_hash_set<Node*> callee_ref_nodes;
+  for (const NameAttrList& call_target : call_target_list) {
+    const OpRegistrationData* op_reg;
+    if (OpRegistry::Global()->LookUp(call_target.name(), &op_reg).ok()) {
+      const OpDef& op = op_reg->op_def;
+      if (absl::c_any_of(op.output_arg(), [](const OpDef::ArgDef arg) {
+            return arg.is_ref();
+          })) {
+        return true;
+      }
+      continue;
+    }
+
+    callee_ref_nodes.clear();
+    FunctionLibraryRuntime::Handle handle;
+    if (!lib_runtime
+             ->Instantiate(call_target.name(), AttrSlice(&call_target.attr()),
+                           &handle)
+             .ok()) {
+      VLOG(2) << "Could not find " << call_target.name()
+              << " in the function library.";
+      // Since we don't know the semantic of `n` we don't know if this is an
+      // error.  We return true to signal a conservative answer.
+      return true;
+    }
+
+    auto release_handle_on_return = gtl::MakeCleanup(
+        [&] { TF_CHECK_OK(lib_runtime->ReleaseHandle(handle)); });
+
+    const FunctionBody* fbody = lib_runtime->GetFunctionBody(handle);
+    TF_RETURN_IF_ERROR(GetNodesRelatedToRefVariablesInDirection(
+        *fbody->graph, lib_runtime, direction, depth + 1, &callee_ref_nodes));
+
+    // We could possibly use something cheaper than
+    // GetNodesRelatedToRefVariablesInDirection since we only care about the
+    // size of `callee_ref_nodes` but for now we don't ceare.
+    if (!callee_ref_nodes.empty()) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// Helper for GetNodesRelatedToRefVariables that traverses the graph in one
+// direction.
+Status GetNodesRelatedToRefVariablesInDirection(
+    const Graph& graph, FunctionLibraryRuntime* lib_runtime,
+    Direction direction, int depth, absl::flat_hash_set<Node*>* result) {
+  std::vector<Node*> nodes_in_order;
+  if (direction == Direction::kForward) {
+    GetReversePostOrder(graph, &nodes_in_order,
+                        /*stable_comparator=*/NodeComparatorName());
+  } else {
+    GetPostOrder(graph, &nodes_in_order,
+                 /*stable_comparator=*/NodeComparatorName());
+  }
+
+  size_t old_result_size;
+  int iterations = 0;
+
+  const int kMaxIterations = 10 * 1000;
+
+  std::vector<bool> callee_has_ref_nodes_cache;
+  callee_has_ref_nodes_cache.resize(graph.num_node_ids());
+
+  auto does_callee_have_ref_nodes = [&](Node* n) -> StatusOr<bool> {
+    if (iterations == 1) {
+      TF_ASSIGN_OR_RETURN(
+          bool callee_has_ref_nodes,
+          DoesAnyCalleeHaveRefNodes(GetCallTargetListFromNode(*n, lib_runtime),
+                                    lib_runtime, direction, depth));
+      callee_has_ref_nodes_cache[n->id()] = callee_has_ref_nodes;
+      return callee_has_ref_nodes;
+    } else {
+      return {callee_has_ref_nodes_cache[n->id()]};
+    }
+  };
+
+  do {
+    TF_RET_CHECK(iterations++ < kMaxIterations) << "infinite loop?";
+
+    old_result_size = result->size();
+    for (Node* n : nodes_in_order) {
+      if (n->IsSource() || n->IsSink()) {
+        continue;
+      }
+
+      bool inserted_n = false;
+      const EdgeSet& edges =
+          direction == Direction::kForward ? n->in_edges() : n->out_edges();
+      for (const Edge* e : edges) {
+        if (result->contains(direction == Direction::kForward ? e->src()
+                                                              : e->dst())) {
+          result->insert(n);
+          inserted_n = true;
+          break;
+        }
+      }
+
+      if (inserted_n) {
+        continue;
+      }
+
+      if (direction == Direction::kForward &&
+          absl::c_any_of(n->output_types(), IsRefType)) {
+        result->insert(n);
+        continue;
+      }
+
+      TF_ASSIGN_OR_RETURN(bool callee_has_ref_nodes,
+                          does_callee_have_ref_nodes(n));
+      if (callee_has_ref_nodes) {
+        result->insert(n);
+        continue;
+      }
+    }
+
+    // Loop until convergence.
+  } while (result->size() != old_result_size);
+
+  VLOG(2) << "# iterations = " << iterations;
+
+  return OkStatus();
+}
+
+// Sorts control inputs of a graphdef so that they are deterministically
+// ordered.
+void SortControlInputs(GraphDef* gdef) {
+  int64_t num_nodes = gdef->node_size();
+  for (int64_t i = 0; i < num_nodes; ++i) {
+    NodeDef* node = gdef->mutable_node(i);
+    // Stable sort control inputs and leave the order of data inputs unchanged.
+    std::stable_sort(node->mutable_input()->begin(),
+                     node->mutable_input()->end(),
+                     [](const string& a, const string& b) {
+                       bool a_is_control = absl::StartsWith(a, "^");
+                       bool b_is_control = absl::StartsWith(b, "^");
+                       return (!a_is_control && b_is_control) ||
+                              (a_is_control && b_is_control && a < b);
+                     });
+  }
+}
+}  // namespace
+
+StatusOr<absl::flat_hash_set<Node*>> GetNodesRelatedToRefVariables(
+    const Graph& graph, FunctionLibraryRuntime* lib_runtime) {
+  absl::flat_hash_set<Node*> result;
+  TF_RETURN_IF_ERROR(GetNodesRelatedToRefVariablesInDirection(
+      graph, lib_runtime, Direction::kForward, 0, &result));
+  TF_RETURN_IF_ERROR(GetNodesRelatedToRefVariablesInDirection(
+      graph, lib_runtime, Direction::kBackward, 0, &result));
+
+  VLOG(1) << "GetNodesRelatedToRefVariables() found " << result.size()
+          << " nodes";
+  return result;
+}
+
+StatusOr<std::string> SerializeGraphDeterministic(const Graph& graph) {
+  GraphDef def;
+  graph.ToGraphDef(&def);
+
+  // Before serialization, sort each node's control inputs to achieve
+  // determinism. Sorting control inputs could help (but not necessarily) create
+  // a deterministic serialization and fingerprint. Other sources of
+  // nondeterminism include unstable node ordering.
+  SortControlInputs(&def);
+
+  std::string s;
+  if (!SerializeToStringDeterministic(def, &s)) {
+    return errors::Internal("Failed to serialize graphdef.");
+  }
+  return s;
+}
+
+StatusOr<uint64> FingerprintGraph(const Graph& graph) {
+  TF_ASSIGN_OR_RETURN(std::string serialized,
+                      SerializeGraphDeterministic(graph));
+  return Hash64(serialized.data(), serialized.size());
 }
 
 // Register a callback for querying XlaGlobalJitLevel.

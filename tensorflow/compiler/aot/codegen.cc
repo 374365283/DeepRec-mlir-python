@@ -26,6 +26,7 @@ limitations under the License.
 #include "absl/strings/str_split.h"
 #include "absl/types/span.h"
 #include "tensorflow/compiler/aot/embedded_protocol_buffers.h"
+#include "tensorflow/compiler/tf2xla/tf2xla.pb.h"
 #include "tensorflow/compiler/tf2xla/tf2xla_util.h"
 #include "tensorflow/compiler/xla/cpu_function_runtime.h"
 #include "tensorflow/compiler/xla/service/compiler.h"
@@ -63,7 +64,7 @@ Status XLATypeToCpp(xla::PrimitiveType type, string* str) {
       *str = "tensorflow::int32";
       break;
     case xla::S64:
-      *str = "tensorflow::int64";
+      *str = "int64_t";
       break;
     case xla::U8:
       *str = "tensorflow::uint8";
@@ -87,7 +88,7 @@ Status XLATypeToCpp(xla::PrimitiveType type, string* str) {
       return errors::Unimplemented("XLA type ", xla::PrimitiveType_Name(type),
                                    " has no equivalent in C++");
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 // Returns the sum of the size of each buffer in `buffer_infos`.
@@ -130,6 +131,7 @@ Status AddRewritesForShape(int i, const xla::Shape& shape,
   TF_RETURN_IF_ERROR(XLATypeToCpp(shape.element_type(), &type));
   std::vector<string> dim_vars;
   string dim_sizes, indices;
+  int count = 1;
   if (shape.rank() == 0 ||
       (shape.dimensions_size() == 1 && shape.dimensions(0) == 1)) {
     dim_sizes = "[1]";
@@ -139,6 +141,7 @@ Status AddRewritesForShape(int i, const xla::Shape& shape,
       dim_vars.push_back(absl::StrCat("size_t dim", dim));
       dim_sizes += absl::StrCat("[", shape.dimensions(dim), "]");
       indices += absl::StrCat("[dim", dim, "]");
+      count *= shape.dimensions(dim);
     }
   }
   rewrites->push_back({"{{I}}", absl::StrCat(i)});
@@ -146,7 +149,8 @@ Status AddRewritesForShape(int i, const xla::Shape& shape,
   rewrites->push_back({"{{DIM_VARS}}", absl::StrJoin(dim_vars, ", ")});
   rewrites->push_back({"{{DIM_SIZES}}", dim_sizes});
   rewrites->push_back({"{{INDICES}}", indices});
-  return Status::OK();
+  rewrites->push_back({"{{COUNT}}", absl::StrCat(count)});
+  return OkStatus();
 }
 
 // Returns code rewritten by replacing all rewrite pairs, with an extra rewrite
@@ -168,8 +172,10 @@ string RewriteWithName(const string& name, string code,
 Status GenArgMethods(const tf2xla::Config& config,
                      const xla::ProgramShapeProto& ps,
                      const CompileResult& compile_result, string* methods) {
-  size_t num_args = ps.parameters_size();
-  if (config.feed_size() + config.variable_size() != num_args) {
+  const int num_args = ps.parameters_size();
+  // feed_size() + variable_size() is the maximum number of args as an
+  // implementation may not create an argument for an unused variable.
+  if (config.feed_size() + config.variable_size() < num_args) {
     return errors::InvalidArgument(
         "mismatch between feed_size(", config.feed_size(), ")+variable_size(",
         config.variable_size(), ") and num_args(", num_args, ")");
@@ -196,13 +202,19 @@ Status GenArgMethods(const tf2xla::Config& config,
     return (*static_cast<const {{TYPE}}(*){{DIM_SIZES}}>(
         arg_data({{I}}))){{INDICES}};
   }
+  int arg{{NAME}}_size() const {
+    return {{COUNT}} * sizeof({{TYPE}});
+  }
+  int arg{{NAME}}_count() const {
+    return {{COUNT}};
+  }
 )";
     *methods += RewriteWithName(absl::StrCat(i), code, rewrites);
     if (!config.feed(i).name().empty()) {
       *methods += RewriteWithName("_" + config.feed(i).name(), code, rewrites);
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 // Generate methods for results (outputs).
@@ -217,8 +229,9 @@ Status GenResultMethods(const tf2xla::Config& config,
   int readonly_variables = absl::c_count_if(
       config.variable(),
       [](const tf2xla::Variable& var) { return var.readonly(); });
-  if (config.fetch_size() + config.variable_size() - readonly_variables !=
-      num_results) {
+  const int actual_num_results =
+      config.fetch_size() + config.variable_size() - readonly_variables;
+  if (actual_num_results != num_results) {
     return errors::InvalidArgument("mismatch between fetch_size(",
                                    config.fetch_size(), ")+variable_size(",
                                    config.variable_size(), ") and tuple_size(",
@@ -243,19 +256,25 @@ Status GenResultMethods(const tf2xla::Config& config,
     return (*static_cast<const {{TYPE}}(*){{DIM_SIZES}}>(
         result_data({{I}}))){{INDICES}};
   }
+  int result{{NAME}}_size() const {
+    return {{COUNT}} * sizeof({{TYPE}});
+  }
+  int result{{NAME}}_count() const {
+    return {{COUNT}};
+  }
 )";
     *methods += RewriteWithName(absl::StrCat(i), code, rewrites);
     if (!config.fetch(i).name().empty()) {
       *methods += RewriteWithName("_" + config.fetch(i).name(), code, rewrites);
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 // Generate methods for variables.
 Status GenVariableMethods(const tf2xla::Config& config,
                           const xla::ProgramShapeProto& ps, string* methods) {
-  size_t num_args = ps.parameters_size();
+  const int num_args = ps.parameters_size();
   for (int i = config.feed_size(); i < num_args; ++i) {
     std::vector<std::pair<string, string>> rewrites;
     TF_RETURN_IF_ERROR(
@@ -278,18 +297,24 @@ Status GenVariableMethods(const tf2xla::Config& config,
     return (*static_cast<const {{TYPE}}(*){{DIM_SIZES}}>(
         arg_data({{I}}))){{INDICES}};
   }
+  int var_{{NAME}}_size() const {
+    return {{COUNT}} * sizeof({{TYPE}});
+  }
+  int var_{{NAME}}_count() const {
+    return {{COUNT}};
+  }
 )";
     const tf2xla::Variable& var = config.variable(i - config.feed_size());
     rewrites.emplace_back("{{MAYBE_CONST}}", var.readonly() ? "const " : "");
     *methods += RewriteWithName(
         var.name().empty() ? var.node_name() : var.name(), code, rewrites);
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 // Generates code implementing {Arg,Result}Names(), where T is one of
-// tf2xla::{Feed,Fetch}. Each feed or fetch name results in a C-style string
-// literal in the array, with nullptr terminating the array.
+// tf2xla::{Feed,Fetch,Variable}. Each feed or fetch name results in a C-style
+// string literal in the array, with nullptr terminating the array.
 template <typename T>
 string GenNameToIndexCode(const T& entries, bool generate) {
   // No need for a static array if we're not supposed to generate the data.
@@ -341,7 +366,7 @@ Status ValidateFeedFetchCppNames(const tf2xla::Config& config) {
           ValidateCppIdent(variable.node_name(), "variable name"));
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 // Returns a list of C++ expressions that, when executed, will construct the
@@ -370,14 +395,15 @@ Status GenerateHeader(const CodegenOpts& opts, const tf2xla::Config& config,
                       const MetadataResult& metadata_result, string* header) {
   TF_RETURN_IF_ERROR(ValidateConfig(config));
   TF_RETURN_IF_ERROR(ValidateFeedFetchCppNames(config));
-  const int64 result_index = compile_result.aot->result_buffer_index();
+  const int64_t result_index = compile_result.aot->result_buffer_index();
   const std::vector<BufferInfo>& buffer_infos =
       compile_result.aot->buffer_infos();
   const std::vector<int32> arg_index_table =
       ::xla::cpu::CreateArgIndexTableFromBufferInfos(buffer_infos);
   std::vector<string> buffer_infos_as_strings =
       BufferInfosToCppExpression(buffer_infos);
-  if (result_index < 0 || result_index >= buffer_infos.size()) {
+  const int64_t buffer_infos_size = buffer_infos.size();
+  if (result_index < 0 || result_index >= buffer_infos_size) {
     return errors::InvalidArgument("result index: ", result_index,
                                    " is outside the range of temp sizes: [0,",
                                    buffer_infos.size(), ")");
@@ -419,12 +445,21 @@ Status GenerateHeader(const CodegenOpts& opts, const tf2xla::Config& config,
   // Generate metadata.
   const string arg_names_code =
       GenNameToIndexCode(config.feed(), opts.gen_name_to_index);
+
+  auto variable_copy = config.variable();
+  for (auto& var : variable_copy) {
+    if (var.name().empty()) {
+      var.set_name(var.node_name());
+    }
+  }
+  const string variable_names_code =
+      GenNameToIndexCode(variable_copy, opts.gen_name_to_index);
+
   const string result_names_code =
       GenNameToIndexCode(config.fetch(), opts.gen_name_to_index);
   const string include_xla_data_proto =
       opts.gen_program_shape
-          ?
-          R"(#include "tensorflow/compiler/xla/xla_data.pb.h")"
+          ? R"(#include "tensorflow/compiler/xla/xla_data.pb.h")"
           : "";
 
   const string include_hlo_profile_printer_data_proto =
@@ -467,7 +502,8 @@ namespace xla { class ExecutableRunOptions; }
 // (Implementation detail) Entry point to the function in the object file.
 extern "C" void {{ENTRY}}(
     void* result, const ::xla::ExecutableRunOptions* run_options,
-    const void** args, void** temps, tensorflow::int64* profile_counters);
+    const void** args, void** temps, XlaCustomCallStatus* status,
+    int64_t* profile_counters);
 
 {{DECLS_FROM_OBJ_FILE}}
 
@@ -508,8 +544,11 @@ class {{CLASS}} final : public tensorflow::XlaCompiledCpuFunction {
   // Number of input arguments for the compiled computation.
   static constexpr size_t kNumArgs = {{ARG_NUM}};
 
+  // Number of variables for the compiled computation.
+  static constexpr size_t kNumVariables = {{VARIABLE_NUM}};
+
   // Byte size of each argument buffer. There are kNumArgs entries.
-  static const ::tensorflow::int64 ArgSize(::tensorflow::int32 index) {
+  static const ::int64_t ArgSize(::tensorflow::int32 index) {
     return BufferInfos()[ArgIndexToBufferIndex()[index]].size();
   }
 
@@ -523,8 +562,10 @@ class {{CLASS}} final : public tensorflow::XlaCompiledCpuFunction {
       set_static_data_num_buffers(data, kNumBuffers);
       set_static_data_arg_index_table(data, ArgIndexToBufferIndex());
       set_static_data_num_args(data, kNumArgs);
+      set_static_data_num_variables(data, kNumVariables);
       set_static_data_result_index(data, kResultIndex);
       set_static_data_arg_names(data, StaticArgNames());
+      set_static_data_variable_names(data, StaticVariableNames());
       set_static_data_result_names(data, StaticResultNames());
       set_static_data_program_shape(data, StaticProgramShape());
       set_static_data_hlo_profile_printer_data(
@@ -627,6 +668,9 @@ class {{CLASS}} final : public tensorflow::XlaCompiledCpuFunction {
   // Array of names of each positional argument, terminated by nullptr.
   static const char** StaticArgNames() {{ARG_NAMES_CODE}}
 
+  // Array of names of each positional variable, terminated by nullptr.
+  static const char** StaticVariableNames() {{VARIABLE_NAMES_CODE}}
+
   // Array of names of each positional result, terminated by nullptr.
   static const char** StaticResultNames() {{RESULT_NAMES_CODE}}
 
@@ -655,6 +699,7 @@ class {{CLASS}} final : public tensorflow::XlaCompiledCpuFunction {
       {"{{ARG_BYTES_TOTAL}}", absl::StrCat(arg_bytes_total)},
       {"{{ARG_NAMES_CODE}}", arg_names_code},
       {"{{ARG_NUM}}", absl::StrCat(arg_index_table.size())},
+      {"{{VARIABLE_NUM}}", absl::StrCat(config.variable_size())},
       {"{{ARG_INDEX_TABLE}}", absl::StrJoin(arg_index_table, ", ")},
       {"{{ASSIGN_PROFILE_COUNTERS_SIZE}}", assign_profile_counters_size},
       {"{{CLASS}}", opts.class_name},
@@ -674,6 +719,7 @@ class {{CLASS}} final : public tensorflow::XlaCompiledCpuFunction {
       {"{{PROGRAM_SHAPE}}", xla::ShapeUtil::HumanString(xla::ProgramShape(ps))},
       {"{{PROGRAM_SHAPE_SHIM_EXPRESSION}}",
        metadata_result.program_shape_access_shim},
+      {"{{VARIABLE_NAMES_CODE}}", variable_names_code},
       {"{{RESULT_INDEX}}", absl::StrCat(result_index)},
       {"{{RESULT_NAMES_CODE}}", result_names_code},
       {"{{TEMP_BYTES_ALIGNED}}", absl::StrCat(temp_bytes_aligned)},
@@ -682,7 +728,7 @@ class {{CLASS}} final : public tensorflow::XlaCompiledCpuFunction {
       {"{{BUFFER_INFOS_AS_STRING}}",
        absl::StrJoin(buffer_infos_as_strings, ",\n")}};
   absl::StrReplaceAll(rewrites, header);
-  return Status::OK();
+  return OkStatus();
 }
 
 static string CreateUniqueIdentifier(const CodegenOpts& opts,
@@ -739,7 +785,7 @@ Status GenerateMetadata(const CodegenOpts& opts,
       std::move(embedded_protobufs.cpp_shims[1].variable_decl));
   metadata_result->object_file_data =
       std::move(embedded_protobufs.object_file_data);
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ParseCppClass(const string& cpp_class, string* class_name,
@@ -754,8 +800,8 @@ Status ParseCppClass(const string& cpp_class, string* class_name,
     // Allow a fully qualified name that starts with "::".
     parts.erase(parts.begin());
   }
-  for (int i = 0; i < parts.size(); ++i) {
-    if (i < parts.size() - 1) {
+  for (int i = 0, end = parts.size(); i < end; ++i) {
+    if (i < end - 1) {
       TF_RETURN_IF_ERROR(ValidateCppIdent(
           parts[i], "in namespace component of cpp_class: " + cpp_class));
       namespaces->push_back(parts[i]);
@@ -765,7 +811,7 @@ Status ParseCppClass(const string& cpp_class, string* class_name,
       *class_name = parts[i];
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status ValidateCppIdent(absl::string_view ident, absl::string_view msg) {
@@ -789,7 +835,7 @@ Status ValidateCppIdent(absl::string_view ident, absl::string_view msg) {
       return errors::InvalidArgument("illegal char: ", msg);
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace tfcompile

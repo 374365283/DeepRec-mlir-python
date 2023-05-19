@@ -1,9 +1,11 @@
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 load("//tensorflow/compiler/aot:tfcompile.bzl", "tf_library")
 load("//tensorflow:tensorflow.bzl", "tf_cc_binary", "tf_cc_test")
+load("//tensorflow/core/platform:build_config.bzl", "if_llvm_aarch64_available", "if_llvm_system_z_available")
 
 package(
     default_visibility = ["//visibility:private"],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 # Don't depend on this directly; this is only used for the benchmark test
@@ -13,6 +15,12 @@ cc_library(
     testonly = 1,
     visibility = ["//visibility:public"],
     deps = ["//tensorflow/core:test_main"],
+)
+
+filegroup(
+    name = "quantize_header",
+    srcs = ["quantize.h"],
+    visibility = ["//visibility:public"],
 )
 
 cc_library(
@@ -26,11 +34,22 @@ cc_library(
         "codegen.h",
         "compile.h",
         "flags.h",
+        "quantize.h",
     ],
+    compatible_with = [],
+    defines = if_llvm_aarch64_available(["TF_LLVM_AARCH64_AVAILABLE=1"]) + if_llvm_system_z_available([
+        "TF_LLVM_S390X_AVAILABLE=1",
+    ]),
+    visibility = ["//tensorflow/python:__pkg__"],
     deps = [
         ":aot_only_var_handle_op",
         ":embedded_protocol_buffers",
+        "@com_google_absl//absl/base",
+        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
         "//tensorflow/compiler/tf2xla",
+        "//tensorflow/compiler/tf2xla:mlir_tf2xla",
         "//tensorflow/compiler/tf2xla:tf2xla_proto_cc",
         "//tensorflow/compiler/tf2xla:tf2xla_util",
         "//tensorflow/compiler/tf2xla:xla_compiler",
@@ -52,10 +71,17 @@ cc_library(
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
         "//tensorflow/core:protos_all_cc",
-        "@com_google_absl//absl/memory",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/types:span",
-    ],
+        "@llvm-project//llvm:ARMCodeGen",  # fixdeps: keep
+        "@llvm-project//llvm:PowerPCCodeGen",  # fixdeps: keep
+        "@llvm-project//llvm:Support",
+        "@llvm-project//llvm:Target",
+        "@llvm-project//llvm:X86CodeGen",  # fixdeps: keep
+        "//tensorflow/core/platform:regexp",
+    ] + if_llvm_system_z_available([
+        "@llvm-project//llvm:SystemZCodeGen",  # fixdeps: keep
+    ]) + if_llvm_aarch64_available([
+        "@llvm-project//llvm:AArch64CodeGen",  # fixdeps: keep
+    ]),
 )
 
 tf_cc_test(
@@ -73,9 +99,10 @@ tf_cc_test(
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
+        "//tensorflow/core/platform:resource_loader",
         "@com_google_absl//absl/strings",
-        "@llvm-project//llvm:support",  # fixdeps: keep
-        "@llvm-project//llvm:x86_code_gen",  # fixdeps: keep
+        "@llvm-project//llvm:Support",  # fixdeps: keep
+        "@llvm-project//llvm:X86CodeGen",  # fixdeps: keep
     ],
 )
 
@@ -86,8 +113,24 @@ tf_cc_binary(
 )
 
 cc_library(
+    name = "llvm_targets",
+    visibility = ["//tensorflow/python:__pkg__"],
+    deps = [
+        "@llvm-project//llvm:ARMCodeGen",  # fixdeps: keep
+        "@llvm-project//llvm:PowerPCCodeGen",  # fixdeps: keep
+        "@llvm-project//llvm:Target",
+        "@llvm-project//llvm:X86CodeGen",  # fixdeps: keep
+    ] + if_llvm_system_z_available([
+        "@llvm-project//llvm:SystemZCodeGen",  # fixdeps: keep
+    ]) + if_llvm_aarch64_available([
+        "@llvm-project//llvm:AArch64CodeGen",  # fixdeps: keep
+    ]),
+)
+
+cc_library(
     name = "tfcompile_main",
     srcs = ["tfcompile_main.cc"],
+    compatible_with = [],
     visibility = ["//visibility:public"],
     deps = [
         ":tfcompile_lib",
@@ -110,54 +153,108 @@ cc_library(
 # tfcompile.bzl correctly handles usage from outside of the package that it is
 # defined in.
 
-# A simple test of tf_library from a text protobuf, mostly to enable the
-# benchmark_test.
+# A simple test of tf_library from a text protobuf, to enable benchmark_test.
+# This test uses an incompleted graph with a node that is not defined. The
+# compilation works because the undefined node is a feed node.
 tf_library(
     name = "test_graph_tfadd",
     testonly = 1,
     config = "test_graph_tfadd.config.pbtxt",
     cpp_class = "AddComp",
     graph = "test_graph_tfadd.pbtxt",
+    mlir_components = "None",
+    tags = [
+        "manual",
+    ],
+)
+
+tf_library(
+    name = "test_graph_tfadd_mlir_bridge",
+    testonly = 1,
+    config = "test_graph_tfadd.config.pbtxt",
+    cpp_class = "AddComp",
+    graph = "test_graph_tfadd.pbtxt",
+    mlir_components = "Bridge",
     tags = [
         "manual",
     ],
 )
 
 # A test of tf_library that includes a graph with an unknown op, but where
-# the compilation works because the unknown op is not needed for the fetches.
+# the compilation works because the node with the unknown op is not needed
+# for the fetches.
 tf_library(
     name = "test_graph_tfunknownop",
     testonly = 1,
     config = "test_graph_tfunknownop.config.pbtxt",
     cpp_class = "UnknownOpAddComp",
     graph = "test_graph_tfunknownop.pbtxt",
+    mlir_components = "None",
+    tags = [
+        "manual",
+    ],
+)
+
+tf_library(
+    name = "test_graph_tfunknownop_mlir_bridge",
+    testonly = 1,
+    config = "test_graph_tfunknownop.config.pbtxt",
+    cpp_class = "UnknownOpAddComp",
+    graph = "test_graph_tfunknownop.pbtxt",
+    mlir_components = "Bridge",
     tags = [
         "manual",
     ],
 )
 
 # A test of tf_library that includes a graph with an unknown op, but where
-# the compilation works because the op between the unknown op and the
-# fetches is a feed.
+# the compilation works because the node with the unknown op is only used as
+# an input of a feed node.
 tf_library(
     name = "test_graph_tfunknownop2",
     testonly = 1,
     config = "test_graph_tfunknownop2.config.pbtxt",
     cpp_class = "UnknownOpAddComp",
     graph = "test_graph_tfunknownop.pbtxt",
+    mlir_components = "None",
+    tags = [
+        "manual",
+    ],
+)
+
+tf_library(
+    name = "test_graph_tfunknownop2_mlir_bridge",
+    testonly = 1,
+    config = "test_graph_tfunknownop2.config.pbtxt",
+    cpp_class = "UnknownOpAddComp",
+    graph = "test_graph_tfunknownop.pbtxt",
+    mlir_components = "Bridge",
     tags = [
         "manual",
     ],
 )
 
 # A test of tf_library that includes a graph with an unknown op, but where
-# the compilation works because the unknown op is fed.
+# the compilation works because the node with the unknown op is a feed node.
 tf_library(
     name = "test_graph_tfunknownop3",
     testonly = 1,
     config = "test_graph_tfunknownop3.config.pbtxt",
     cpp_class = "UnknownOpAddComp",
     graph = "test_graph_tfunknownop.pbtxt",
+    mlir_components = "None",
+    tags = [
+        "manual",
+    ],
+)
+
+tf_library(
+    name = "test_graph_tfunknownop3_mlir_bridge",
+    testonly = 1,
+    config = "test_graph_tfunknownop3.config.pbtxt",
+    cpp_class = "UnknownOpAddComp",
+    graph = "test_graph_tfunknownop.pbtxt",
+    mlir_components = "Bridge",
     tags = [
         "manual",
     ],
@@ -194,22 +291,30 @@ cc_library(
     deps = [
         "//tensorflow/compiler/xla:statusor",
         "//tensorflow/compiler/xla:util",
-        "//tensorflow/compiler/xla/service/llvm_ir:llvm_util",
+        "//tensorflow/compiler/xla/service/llvm_ir:llvm_type_conversion_util",
         "//tensorflow/core:lib",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
-        "@llvm-project//llvm:core",
-        "@llvm-project//llvm:support",
-        "@llvm-project//llvm:target",
+        "@llvm-project//llvm:Core",
+        "@llvm-project//llvm:MC",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//llvm:Target",
     ],
 )
 
 cc_library(
     name = "aot_only_var_handle_op",
     srcs = ["aot_only_var_handle_op.cc"],
+    hdrs = ["aot_only_var_handle_op.h"],
+    visibility = [
+        "//tensorflow/compiler/tf2xla:__pkg__",
+    ],
     deps = [
         "//tensorflow/compiler/tf2xla:xla_compiler",
+        "//tensorflow/compiler/tf2xla:xla_context",
+        "//tensorflow/compiler/tf2xla:xla_op_registry",
+        "//tensorflow/core:framework",
     ],
     alwayslink = 1,
 )
@@ -232,9 +337,13 @@ test_suite(
     tests = [
         ":benchmark_test",
         ":codegen_test",
+        ":test_graph_tfadd_mlir_bridge_test",
         ":test_graph_tfadd_test",
+        ":test_graph_tfunknownop2_mlir_bridge_test",
         ":test_graph_tfunknownop2_test",
+        ":test_graph_tfunknownop3_mlir_bridge_test",
         ":test_graph_tfunknownop3_test",
+        ":test_graph_tfunknownop_mlir_bridge_test",
         ":test_graph_tfunknownop_test",
         "//tensorflow/compiler/aot/tests:all_tests",
     ],

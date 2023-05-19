@@ -19,8 +19,8 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/computation_layout.h"
 #include "tensorflow/compiler/xla/service/hlo_instructions.h"
 #include "tensorflow/compiler/xla/service/layout_assignment.h"
-#include "tensorflow/core/lib/core/status.h"
-#include "tensorflow/core/platform/stream_executor_no_cuda.h"
+#include "tensorflow/compiler/xla/stream_executor/stream_executor.h"
+#include "tensorflow/tsl/platform/status.h"
 
 namespace xla {
 namespace gpu {
@@ -29,27 +29,34 @@ namespace gpu {
 // layout constraints for operands and results of library calls.
 class GpuLayoutAssignment : public LayoutAssignment {
  public:
-  explicit GpuLayoutAssignment(ComputationLayout* entry_computation_layout,
-                               std::function<bool(const HloInstruction*)>
-                                   instruction_can_change_layout_func,
-                               se::StreamExecutor* stream_executor)
-      : LayoutAssignment(entry_computation_layout,
-                         std::move(instruction_can_change_layout_func)),
+  explicit GpuLayoutAssignment(
+      ComputationLayout* entry_computation_layout,
+      se::StreamExecutor* stream_executor,
+      ChannelLayoutConstraints* channel_constraints = nullptr)
+      : LayoutAssignment(entry_computation_layout, channel_constraints),
         stream_executor_(stream_executor) {}
   ~GpuLayoutAssignment() override {}
 
  protected:
   Status AddBackendConstraints(LayoutConstraints* constraints) override;
-  Status PropagateOperandConstraint(
-      const OperandLayoutConstraint& layout_constraint,
-      LayoutConstraints* constraints) override;
-  Status PropagateBufferConstraint(
-      const BufferLayoutConstraint& buffer_constraint,
-      LayoutConstraints* constraints) override;
 
  private:
   Status AddBackendConstraintsToDnnConvCustomCall(
       HloCustomCallInstruction* instr, LayoutConstraints* constraints);
+
+  Status SetOperandBatchRowsColsLayout(const HloInstruction* instruction,
+                                       int64_t operand,
+                                       absl::Span<const int64_t> batch_dims,
+                                       absl::Span<const int64_t> row_dims,
+                                       absl::Span<const int64_t> col_dims);
+
+  Status SetDotOperandLayout(const HloInstruction* instruction, int64_t operand,
+                             absl::Span<const int64_t> batch_dims,
+                             absl::Span<const int64_t> row_dims,
+                             absl::Span<const int64_t> col_dims);
+
+  Status SetDotLayout(const HloInstruction* instruction,
+                      LayoutConstraints* constraints);
 
   se::StreamExecutor* stream_executor_;
 };

@@ -20,7 +20,9 @@ limitations under the License.
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
 #include "tensorflow/compiler/xla/client/xla_builder.h"
+#include "tensorflow/compiler/xla/primitive_util.h"
 #include "tensorflow/compiler/xla/status_macros.h"
+#include "tensorflow/compiler/xla/xla_data.pb.h"
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/op_kernel.h"
 
@@ -31,15 +33,17 @@ namespace {
 // buffer_shape[num_index_dims:]
 Status ValidateUpdateShape(const TensorShape& buffer_shape,
                            const TensorShape& indices_shape,
-                           const TensorShape& updates_shape) {
+                           const TensorShape& updates_shape,
+                           bool broadcast_scalar_update) {
   if (indices_shape.dims() < 1) {
     return errors::InvalidArgument(
         "indices shape must have >= 1 dimension; got ",
         indices_shape.DebugString());
   }
 
-  const int64 num_index_dims = indices_shape.dim_size(indices_shape.dims() - 1);
-  const int64 batch_dim = indices_shape.dims() - 1;
+  const int64_t num_index_dims =
+      indices_shape.dim_size(indices_shape.dims() - 1);
+  const int64_t batch_dim = indices_shape.dims() - 1;
 
   auto shape_err = [&]() {
     return errors::InvalidArgument(
@@ -50,6 +54,10 @@ Status ValidateUpdateShape(const TensorShape& buffer_shape,
         ", buffer_shape: ", buffer_shape.DebugString(),
         ", num_index_dims: ", num_index_dims, ", and batch_dim: ", batch_dim);
   };
+
+  if (updates_shape.dims() == 0 && broadcast_scalar_update) {
+    return OkStatus();
+  }
 
   if (updates_shape.dims() < batch_dim) return shape_err();
   if (buffer_shape.dims() <
@@ -71,7 +79,7 @@ Status ValidateUpdateShape(const TensorShape& buffer_shape,
       return shape_err();
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 class ScatterNdOp : public XlaOpKernel {
@@ -100,25 +108,34 @@ class ScatterNdOp : public XlaOpKernel {
             "Indices and updates specified for empty output. indices shape: ",
             indices_shape.DebugString()));
 
-    OP_REQUIRES_OK(context, ValidateUpdateShape(buffer_shape, indices_shape,
-                                                updates_shape));
+    OP_REQUIRES_OK(
+        context, ValidateUpdateShape(buffer_shape, indices_shape, updates_shape,
+                                     /*broadcast_scalar_update=*/false));
 
     xla::XlaBuilder* builder = context->builder();
     auto buffer = xla::Broadcast(XlaHelpers::Zero(builder, dtype),
                                  buffer_shape.dim_sizes());
     auto indices = context->Input(0);
     auto updates = context->Input(1);
+    auto combine =
+        context->input_xla_type(1) == xla::PRED ? CombineBool : CombineNum;
     auto result =
         XlaScatter(buffer, updates, indices,
-                   /*indices_are_vectors=*/true, /*combiner=*/Combine, builder);
+                   /*indices_are_vectors=*/true, /*combiner=*/combine, builder);
     OP_REQUIRES_OK(context, result.status());
-    context->SetOutput(0, result.ValueOrDie());
+    context->SetOutput(0, result.value());
   }
 
  private:
-  static xla::XlaOp Combine(const xla::XlaOp& x, const xla::XlaOp& y,
-                            xla::XlaBuilder* builder) {
+  static xla::XlaOp CombineNum(const xla::XlaOp x, const xla::XlaOp y,
+                               xla::XlaBuilder* builder) {
+    (void)builder;
     return xla::Add(x, y);
+  }
+  static xla::XlaOp CombineBool(const xla::XlaOp x, const xla::XlaOp y,
+                                xla::XlaBuilder* builder) {
+    (void)builder;
+    return xla::Or(x, y);
   }
 };
 
@@ -128,7 +145,8 @@ REGISTER_XLA_OP(Name("ScatterNd").CompileTimeConstantInput("shape"),
 void CompileTensorScatter(
     XlaOpKernelContext* context,
     const std::function<xla::XlaOp(xla::XlaOp, xla::XlaOp, xla::XlaBuilder*)>&
-        combiner) {
+        combiner,
+    bool broadcast_scalar_update) {
   TensorShape buffer_shape = context->InputShape(0);
   TensorShape indices_shape = context->InputShape(1);
   TensorShape updates_shape = context->InputShape(2);
@@ -146,8 +164,9 @@ void CompileTensorScatter(
           "Indices and updates specified for empty output. indices shape: ",
           indices_shape.DebugString()));
 
-  OP_REQUIRES_OK(
-      context, ValidateUpdateShape(buffer_shape, indices_shape, updates_shape));
+  OP_REQUIRES_OK(context,
+                 ValidateUpdateShape(buffer_shape, indices_shape, updates_shape,
+                                     broadcast_scalar_update));
 
   xla::XlaBuilder* builder = context->builder();
   auto buffer = context->Input(0);
@@ -156,7 +175,7 @@ void CompileTensorScatter(
   auto result = XlaScatter(buffer, updates, indices,
                            /*indices_are_vectors=*/true, combiner, builder);
   OP_REQUIRES_OK(context, result.status());
-  context->SetOutput(0, result.ValueOrDie());
+  context->SetOutput(0, result.value());
 }
 
 class TensorScatterAddOp : public XlaOpKernel {
@@ -165,10 +184,42 @@ class TensorScatterAddOp : public XlaOpKernel {
       : XlaOpKernel(context) {}
 
   void Compile(XlaOpKernelContext* context) override {
-    CompileTensorScatter(context,
-                         [](xla::XlaOp x, xla::XlaOp y, xla::XlaBuilder*) {
-                           return xla::Add(x, y);
-                         });
+    CompileTensorScatter(
+        context,
+        [](xla::XlaOp x, xla::XlaOp y, xla::XlaBuilder*) {
+          return xla::Add(x, y);
+        },
+        /*broadcast_scalar_update=*/true);
+  }
+};
+
+class TensorScatterMaxOp : public XlaOpKernel {
+ public:
+  explicit TensorScatterMaxOp(OpKernelConstruction* context)
+      : XlaOpKernel(context) {}
+
+  void Compile(XlaOpKernelContext* context) override {
+    CompileTensorScatter(
+        context,
+        [](xla::XlaOp x, xla::XlaOp y, xla::XlaBuilder*) {
+          return xla::Max(x, y);
+        },
+        /*broadcast_scalar_update=*/false);
+  }
+};
+
+class TensorScatterMinOp : public XlaOpKernel {
+ public:
+  explicit TensorScatterMinOp(OpKernelConstruction* context)
+      : XlaOpKernel(context) {}
+
+  void Compile(XlaOpKernelContext* context) override {
+    CompileTensorScatter(
+        context,
+        [](xla::XlaOp x, xla::XlaOp y, xla::XlaBuilder*) {
+          return xla::Min(x, y);
+        },
+        /*broadcast_scalar_update=*/false);
   }
 };
 
@@ -178,10 +229,12 @@ class TensorScatterSubOp : public XlaOpKernel {
       : XlaOpKernel(context) {}
 
   void Compile(XlaOpKernelContext* context) override {
-    CompileTensorScatter(context,
-                         [](xla::XlaOp x, xla::XlaOp y, xla::XlaBuilder*) {
-                           return xla::Sub(x, y);
-                         });
+    CompileTensorScatter(
+        context,
+        [](xla::XlaOp x, xla::XlaOp y, xla::XlaBuilder*) {
+          return xla::Sub(x, y);
+        },
+        /*broadcast_scalar_update=*/false);
   }
 };
 
@@ -192,11 +245,14 @@ class TensorScatterUpdateOp : public XlaOpKernel {
 
   void Compile(XlaOpKernelContext* context) override {
     CompileTensorScatter(
-        context, [](xla::XlaOp, xla::XlaOp y, xla::XlaBuilder*) { return y; });
+        context, [](xla::XlaOp, xla::XlaOp y, xla::XlaBuilder*) { return y; },
+        /*broadcast_scalar_update=*/true);
   }
 };
 
 REGISTER_XLA_OP(Name("TensorScatterAdd"), TensorScatterAddOp);
+REGISTER_XLA_OP(Name("TensorScatterMax"), TensorScatterMaxOp);
+REGISTER_XLA_OP(Name("TensorScatterMin"), TensorScatterMinOp);
 REGISTER_XLA_OP(Name("TensorScatterSub"), TensorScatterSubOp);
 REGISTER_XLA_OP(Name("TensorScatterUpdate"), TensorScatterUpdateOp);
 

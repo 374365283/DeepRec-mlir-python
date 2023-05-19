@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_COMPILER_MLIR_op_or_val_NAME_MAPPER_H_
-#define TENSORFLOW_COMPILER_MLIR_op_or_val_NAME_MAPPER_H_
+#ifndef TENSORFLOW_COMPILER_MLIR_OP_OR_ARG_NAME_MAPPER_H_
+#define TENSORFLOW_COMPILER_MLIR_OP_OR_ARG_NAME_MAPPER_H_
 
 #include <string>
 
@@ -23,8 +23,8 @@ limitations under the License.
 #include "llvm/ADT/PointerUnion.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
-#include "mlir/IR/Operation.h"  // TF:llvm-project
-#include "mlir/IR/Value.h"  // TF:llvm-project
+#include "mlir/IR/Operation.h"  // from @llvm-project
+#include "mlir/IR/Value.h"  // from @llvm-project
 
 namespace tensorflow {
 
@@ -64,6 +64,9 @@ class OpOrArgNameMapper {
     return op_or_val_to_name_;
   }
 
+  // Returns the separator used before uniqueing suffix.
+  virtual llvm::StringRef GetSuffixSeparator() { return ""; }
+
  private:
   // Returns name from the location of the operation or value.
   virtual std::string GetName(OpOrVal op_or_val) = 0;
@@ -96,4 +99,4 @@ class OpOrArgStripNameMapper : public OpOrArgNameMapper {
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_COMPILER_MLIR_op_or_val_NAME_MAPPER_H_
+#endif  // TENSORFLOW_COMPILER_MLIR_OP_OR_ARG_NAME_MAPPER_H_

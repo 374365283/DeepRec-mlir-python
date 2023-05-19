@@ -14,11 +14,17 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/compiler/jit/xla_compilation_cache.h"
+
+#include "tensorflow/compiler/jit/flags.h"
 #include "tensorflow/compiler/tf2xla/shape_util.h"
+#include "tensorflow/compiler/xla/client/client_library.h"
 #include "tensorflow/core/platform/test.h"
+#include "tensorflow/core/platform/test_benchmark.h"
 
 namespace tensorflow {
 namespace {
+
+using SignatureHash = XlaCompilationCache::Signature::Hash;
 
 TEST(XlaCompilationCacheTest, SignatureEquality) {
   NameAttrList fn;
@@ -45,10 +51,72 @@ TEST(XlaCompilationCacheTest, SignatureEquality) {
   for (int i = 0; i < signatures.size(); ++i) {
     for (int j = 0; j < signatures.size(); ++j) {
       EXPECT_EQ(i == j, signatures[i] == signatures[j])
-          << signatures[i].HumanString() << " " << signatures[j].HumanString();
+          << "s1: " << signatures[i].HumanString() << "\n"
+          << "s2: " << signatures[j].HumanString();
+      EXPECT_EQ(i == j,
+                signatures[i].HumanString() == signatures[j].HumanString())
+          << "s1: " << signatures[i].HumanString() << "\n"
+          << "s2: " << signatures[j].HumanString();
+      EXPECT_EQ(i == j, SignatureHash()(signatures[i]) ==
+                            SignatureHash()(signatures[j]))
+          << "s1: " << signatures[i].HumanString() << "\n"
+          << "s1_hash: " << SignatureHash()(signatures[i]) << "\n"
+          << "s2: " << signatures[j].HumanString() << "\n"
+          << "s2_hash: " << SignatureHash()(signatures[j]);
     }
   }
 }
+
+TEST(XlaCompilationCacheTest, SignatureUniqueness) {
+  NameAttrList fn;
+  fn.set_name("afunction");
+  std::vector<XlaCompiler::Argument> args(2);
+  args[0].kind = XlaCompiler::Argument::kConstant;
+  args[0].type = DT_INT32;
+  args[0].constant_value = Tensor(DT_INT32, {4, 0});
+
+  args[1].kind = XlaCompiler::Argument::kParameter;
+  args[1].type = DT_INT32;
+  args[1].shape = TensorShape({4, 0});
+
+  TF_ASSERT_OK_AND_ASSIGN(XlaCompilationCache::Signature s1,
+                          XlaCompilationCache::BuildSignature(fn, args));
+
+  using std::swap;  // go/using-std-swap
+  swap(args[0], args[1]);
+  TF_ASSERT_OK_AND_ASSIGN(XlaCompilationCache::Signature s2,
+                          XlaCompilationCache::BuildSignature(fn, args));
+
+  EXPECT_NE(s1.HumanString(), s2.HumanString());
+  EXPECT_NE(SignatureHash()(s1), SignatureHash()(s2));
+  EXPECT_FALSE(s1 == s2);
+}
+
+void BM_BuildSignature(::testing::benchmark::State& state) {
+  const int n_args = state.range(0);
+
+  NameAttrList fn;
+  fn.set_name("afunction");
+  for (int i = 0; i < n_args; i++) {
+    (*fn.mutable_attr())[absl::StrCat("T", i)].set_type(DT_FLOAT);
+  }
+  std::vector<XlaCompiler::Argument> args(n_args);
+  for (int i = 0; i < n_args; i++) {
+    args[i].kind = (((i % 3) == 0) ? XlaCompiler::Argument::kConstant
+                                   : XlaCompiler::Argument::kParameter);
+    args[i].type = DT_INT32;
+    args[i].shape = TensorShape({4, 0});
+    args[i].constant_value = Tensor(DT_INT32, {4, 0});
+  }
+
+  for (auto i : state) {
+    StatusOr<XlaCompilationCache::Signature> s =
+        XlaCompilationCache::BuildSignature(fn, args);
+    CHECK(s.ok());
+    XlaCompilationCache::Signature sig = std::move(s.value());
+  }
+}
+BENCHMARK(BM_BuildSignature)->Arg(0)->Arg(1)->Arg(2)->Arg(5)->Arg(10);
 
 }  // namespace
 }  // namespace tensorflow

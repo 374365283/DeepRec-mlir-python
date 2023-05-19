@@ -13,23 +13,26 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "mlir/Dialect/StandardOps/IR/Ops.h"
+#include <memory>
+
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Attributes.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
-#include "mlir/IR/StandardTypes.h"
 #include "mlir/Pass/Pass.h"
-#include "mlir/Support/Functional.h"
 #include "mlir/Support/LLVM.h"
 #include "absl/memory/memory.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSwitch.h"
-#include "mlir/Dialect/QuantOps/FakeQuantSupport.h"  // TF:llvm-project
-#include "mlir/Dialect/QuantOps/QuantOps.h"  // TF:llvm-project
-#include "mlir/IR/Location.h"  // TF:llvm-project
+#include "mlir/IR/Location.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
+#include "tensorflow/compiler/mlir/lite/quantization/ir/FakeQuantSupport.h"
+#include "tensorflow/compiler/mlir/lite/quantization/ir/QuantOps.h"
 #include "tensorflow/compiler/mlir/lite/quantization/quantization_utils.h"
+#include "tensorflow/compiler/mlir/lite/transforms/passes.h"
+#include "tensorflow/compiler/mlir/lite/transforms/prepare_quantize_helper.h"
 
 //===----------------------------------------------------------------------===//
 // The Pass to add default quantization parameters for the activations which
@@ -44,12 +47,24 @@ namespace TFL {
 #include "tensorflow/compiler/mlir/lite/utils/generated_op_quant_spec_getters.inc"
 
 namespace {
-class DefaultQuantParamsPass : public FunctionPass<DefaultQuantParamsPass> {
- public:
-  explicit DefaultQuantParamsPass(double default_min, double default_max)
-      : default_min_(default_min), default_max_(default_max) {}
 
-  void runOnFunction() override;
+#define GEN_PASS_DEF_DEFAULTQUANTPARAMSPASS
+#include "tensorflow/compiler/mlir/lite/transforms/passes.h.inc"
+
+class DefaultQuantParamsPass
+    : public impl::DefaultQuantParamsPassBase<DefaultQuantParamsPass> {
+ public:
+  using DefaultQuantParamsPassBase::DefaultQuantParamsPassBase;
+
+  explicit DefaultQuantParamsPass(double default_min, double default_max,
+                                  bool is_signed) {
+    this->default_min_ = default_min;
+    this->default_max_ = default_max;
+    this->is_signed_ = is_signed;
+  }
+
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(DefaultQuantParamsPass)
+  void runOnOperation() override;
 
  private:
   // Whether the value is used as a bias input of another op. Here we assume
@@ -79,15 +94,12 @@ class DefaultQuantParamsPass : public FunctionPass<DefaultQuantParamsPass> {
   quant::QuantParams GetQuantParamsForBias(Operation *op, int bias,
                                            const std::vector<int> &non_biases,
                                            quant::AccumulatorScaleFunc func);
-
-  double default_min_;
-  double default_max_;
   quant::QuantParams default_quant_params_;
 };
 }  // namespace
 
-void DefaultQuantParamsPass::runOnFunction() {
-  FuncOp func = getFunction();
+void DefaultQuantParamsPass::runOnOperation() {
+  func::FuncOp func = getOperation();
   OpBuilder builder(func);
 
   std::vector<Value> activation_values;
@@ -104,11 +116,10 @@ void DefaultQuantParamsPass::runOnFunction() {
   }
 
   func.walk([&](Operation *op) {
-    if (op->isKnownTerminator() ||
-        op->hasTrait<OpTrait::quant::NoQuantizableResult>() ||
-        llvm::isa<quant::QuantizeCastOp>(op) ||
-        llvm::isa<quant::DequantizeCastOp>(op))
+    if (quant::IsOpNotQuantizable(op) ||
+        op->getParentOfType<TFL::CustomTfOp>()) {
       return;
+    }
 
     for (auto res : op->getResults()) {
       if (UsedAsBias(res)) {
@@ -205,33 +216,30 @@ quant::QuantParams DefaultQuantParamsPass::GetQuantParamsForBias(
   // The non-bias hasn't been quantized, let's skip this bias.
   if (non_bias_types.size() != non_biases.size()) return {};
 
-  return func(non_bias_types);
+  return func(non_bias_types, false);
 }
 
 quant::QuantParams DefaultQuantParamsPass::GetDefaultQuantParams(
     Builder builder) {
   if (!default_quant_params_) {
-    default_quant_params_ = quant::fakeQuantAttrsToType(
+    default_quant_params_ = quantfork::fakeQuantAttrsToType(
         builder.getUnknownLoc(),
         /*numBits=*/8, default_min_, default_max_, /*narrowRange=*/false,
-        builder.getF32Type());
+        builder.getF32Type(), is_signed_);
   }
   return default_quant_params_;
 }
 
 // Creates an instance of the default quant parameters pass.
-std::unique_ptr<OpPassBase<FuncOp>> CreateDefaultQuantParamsPass(
-    double default_min, double default_max) {
-  return absl::make_unique<DefaultQuantParamsPass>(default_min, default_max);
+std::unique_ptr<OperationPass<func::FuncOp>> CreateDefaultQuantParamsPass(
+    double default_min, double default_max, bool is_signed) {
+  return std::make_unique<DefaultQuantParamsPass>(default_min, default_max,
+                                                  is_signed);
 }
 
-// Registers this pass with default values, only for test
-static PassRegistration<DefaultQuantParamsPass> pass(
-    "tfl-default-quant",
-    "Apply quantization with default quantization parameter", [] {
-      return CreateDefaultQuantParamsPass(/*default_min=*/-1.0,
-                                          /*default_max=*/1.0);
-    });
+std::unique_ptr<OperationPass<func::FuncOp>> CreateDefaultQuantParamsPass() {
+  return std::make_unique<DefaultQuantParamsPass>();
+}
 
 }  // namespace TFL
 }  // namespace mlir

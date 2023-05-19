@@ -16,13 +16,13 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/utils/convert_type.h"
 
 #include "llvm/Support/raw_ostream.h"
-#include "mlir/IR/Builders.h"  // TF:llvm-project
-#include "mlir/IR/MLIRContext.h"  // TF:llvm-project
-#include "mlir/IR/StandardTypes.h"  // TF:llvm-project
+#include "mlir/IR/Builders.h"  // from @llvm-project
+#include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
+#include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "tensorflow/compiler/xla/stream_executor/lib/statusor.h"
 #include "tensorflow/compiler/xla/test.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
-#include "tensorflow/stream_executor/lib/statusor.h"
 
 namespace tensorflow {
 namespace {
@@ -39,7 +39,7 @@ std::string ConvertToMlirString(const std::vector<int64_t>& dims,
   auto status_or = ConvertToMlirTensorType(shape, dtype, &b);
   std::string buf;
   llvm::raw_string_ostream os(buf);
-  status_or.ValueOrDie().print(os);
+  status_or.value().print(os);
   return os.str();
 }
 

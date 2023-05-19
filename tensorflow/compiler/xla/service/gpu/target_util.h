@@ -42,24 +42,26 @@ enum class TargetIntrinsicID {
   kBlockDimx,
   kBlockDimy,
   kBlockDimz,
+  kGroupBarrierId,
 };
 
 // Enumeration to get target specific device math function.
 enum class TargetDeviceFunctionID {
-  kPow = 0,
-  kErfcinv,
-  kLog,
-  kLog1p,
-  kSin,
+  kAtan2 = 0,
   kCos,
+  kErfcinv,
   kExp,
   kExpm1,
-  kSqrt,
-  kRsqrt,
-  kAtan2,
   kFmod,
+  kHypot,
+  kLog,
+  kLog1p,
+  kPow,
   kRound,
-  kHypot
+  kRsqrt,
+  kSin,
+  kSqrt,
+  kTanh,
 };
 
 // Emits IR to call a device function named "callee_name" on the given

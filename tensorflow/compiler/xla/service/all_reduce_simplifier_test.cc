@@ -18,7 +18,6 @@ limitations under the License.
 #include <memory>
 #include <utility>
 
-#include "absl/memory/memory.h"
 #include "tensorflow/compiler/xla/service/hlo_computation.h"
 #include "tensorflow/compiler/xla/service/hlo_instruction.h"
 #include "tensorflow/compiler/xla/service/hlo_opcode.h"
@@ -30,7 +29,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/tests/hlo_test_base.h"
 #include "tensorflow/compiler/xla/types.h"
 #include "tensorflow/compiler/xla/window_util.h"
-#include "tensorflow/core/lib/core/status_test_util.h"
+#include "tensorflow/tsl/lib/core/status_test_util.h"
 
 namespace xla {
 namespace {
@@ -78,10 +77,10 @@ test {
   ROOT tuple = (f32[8,16], f32[8,16], f32[8,16], f32[]) tuple(all-reduce, all-reduce.1, all-reduce.2, all-reduce.3)
 }
 )";
-  TF_ASSERT_OK_AND_ASSIGN(auto module,
-                          ParseAndReturnVerifiedModule(kModuleStr));
+  TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(
+                                           kModuleStr, /*replica_count=*/8));
   AllReduceSimplifier simplifier(/*replica_count=*/8);
-  ASSERT_TRUE(simplifier.Run(module.get()).ValueOrDie());
+  ASSERT_TRUE(simplifier.Run(module.get()).value());
   EXPECT_THAT(
       module->entry_computation()->root_instruction(),
       GmockMatch(m::Tuple(
@@ -114,10 +113,10 @@ test {
   ROOT all-reduce.1 = f32[8,16] all-reduce(all-reduce), replica_groups={}, to_apply=sum
 }
 )";
-  TF_ASSERT_OK_AND_ASSIGN(auto module,
-                          ParseAndReturnVerifiedModule(kModuleStr));
+  TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(
+                                           kModuleStr, /*replica_count=*/8));
   AllReduceSimplifier simplifier(/*replica_count=*/8);
-  ASSERT_TRUE(simplifier.Run(module.get()).ValueOrDie());
+  ASSERT_TRUE(simplifier.Run(module.get()).value());
   EXPECT_THAT(module->entry_computation()->root_instruction(),
               GmockMatch(m::MultiplyAnyOrder(
                   m::AllReduce(m::Parameter(0)),
@@ -155,10 +154,10 @@ test {
   ROOT tuple = (f32[8,16], f32[8,16], f32[8,16]) tuple(all-reduce, all-reduce.1, all-reduce.2)
 }
 )";
-  TF_ASSERT_OK_AND_ASSIGN(auto module,
-                          ParseAndReturnVerifiedModule(kModuleStr));
+  TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(
+                                           kModuleStr, /*replica_count=*/8));
   AllReduceSimplifier simplifier(/*replica_count=*/8);
-  ASSERT_TRUE(simplifier.Run(module.get()).ValueOrDie());
+  ASSERT_TRUE(simplifier.Run(module.get()).value());
   EXPECT_THAT(
       module->entry_computation()->root_instruction(),
       GmockMatch(m::Tuple(
@@ -167,5 +166,30 @@ test {
           m::Parameter(0), m::AllReduce(m::Parameter(1)))));
 }
 
+TEST_F(AllReduceSimplifierTest, TrivialSubgroupAllReduce) {
+  const char* kModuleStr = R"(
+HloModule m
+
+sum {
+  a = f32[] parameter(0)
+  b = f32[] parameter(1)
+  ROOT add.2 = f32[] add(a, b)
+}
+
+
+test {
+  p0 = f32[8,16] parameter(0), parameter_replication={false}
+  ROOT all-reduce = f32[8,16] all-reduce(p0),
+    replica_groups={{0},{1},{2},{3},{4},{5},{6},{7}},
+    to_apply=sum
+}
+)";
+  TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(
+                                           kModuleStr, /*replica_count=*/8));
+  AllReduceSimplifier simplifier(/*replica_count=*/8);
+  EXPECT_TRUE(simplifier.Run(module.get()).value());
+  EXPECT_THAT(module->entry_computation()->root_instruction(),
+              GmockMatch(m::Parameter(0)));
+}
 }  // namespace
 }  // namespace xla

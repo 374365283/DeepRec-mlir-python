@@ -14,16 +14,12 @@
 # ==============================================================================
 """Functional tests for fused batch norm operations."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from absl.testing import parameterized
 import numpy as np
 
 from tensorflow.compiler.tests import test_utils
 from tensorflow.compiler.tests import xla_test
-from tensorflow.python.compat import compat
+from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import gen_nn_ops
 from tensorflow.python.ops import gradient_checker
@@ -41,6 +37,7 @@ DATA_FORMATS_AND_AVG_FACTORS = (
     ("_data_format_NCHW_no_averaging", "NCHW", 1.0),
     ("_data_format_NCHW_averaging", "NCHW", 0.6),
 )
+
 
 class FusedBatchNormTest(xla_test.XLATestCase, parameterized.TestCase):
 
@@ -131,9 +128,6 @@ class FusedBatchNormTest(xla_test.XLATestCase, parameterized.TestCase):
 
   def _testLearning(self, use_gradient_checker, data_format,
                     exponential_avg_factor):
-    if not compat.forward_compatible(2020, 3,
-                                     6) and exponential_avg_factor != 1.0:
-      self.skipTest("running average not available.")
     channel = 3
     x_shape = [2, 2, 6, channel]
     scale_shape = [channel]
@@ -203,6 +197,7 @@ class FusedBatchNormTest(xla_test.XLATestCase, parameterized.TestCase):
             x_val_converted.shape,
             extra_feed_dict=feed_dict)
         self.assertLess(err, 1e-3)
+
       y_tf, mean_tf, var_tf = sess.run([y, mean, var], feed_dict)
       self.assertAllClose(y_tf, y_ref_converted, atol=1e-3)
       self.assertAllClose(mean_tf, mean_ref, atol=1e-3)
@@ -219,6 +214,12 @@ class FusedBatchNormTest(xla_test.XLATestCase, parameterized.TestCase):
 
   @parameterized.named_parameters(*DATA_FORMATS)
   def testGradientTraining(self, data_format):
+    # disable_mlir_bridge for GPUs as there is no legalization for GPU with
+    # MLIR.
+    # TODO(b/189039456): Customize FusedBatchNorm legalization for GPU in MLIR.
+    if test_util.is_mlir_bridge_enabled() and self.device == "XLA_GPU":
+      self.skipTest("b/189039456")
+
     # TODO(b/64270657): Use gradient_checker here in addition to comparing with
     # this reference implementation.
     channel = 3

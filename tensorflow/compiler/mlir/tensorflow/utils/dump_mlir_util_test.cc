@@ -16,9 +16,10 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/utils/dump_mlir_util.h"
 
 #include "llvm/Support/raw_ostream.h"
-#include "mlir/IR/Location.h"  // TF:llvm-project
-#include "mlir/IR/MLIRContext.h"  // TF:llvm-project
-#include "mlir/IR/Module.h"  // TF:llvm-project
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
+#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
+#include "mlir/IR/Location.h"  // from @llvm-project
+#include "mlir/IR/MLIRContext.h"  // from @llvm-project
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/test.h"
@@ -28,7 +29,7 @@ namespace {
 
 TEST(DumpMlirModuleTest, NoEnvPrefix) {
   mlir::MLIRContext context;
-  mlir::OwningModuleRef module_ref =
+  mlir::OwningOpRef<mlir::ModuleOp> module_ref =
       mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
   unsetenv("TF_DUMP_GRAPH_PREFIX");
 
@@ -38,23 +39,24 @@ TEST(DumpMlirModuleTest, NoEnvPrefix) {
 
 TEST(DumpMlirModuleTest, LogInfo) {
   mlir::MLIRContext context;
-  mlir::OwningModuleRef module_ref =
+  mlir::OwningOpRef<mlir::ModuleOp> module_ref =
       mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
   setenv("TF_DUMP_GRAPH_PREFIX", "-", 1);
 
   std::string filepath = DumpMlirOpToFile("module", module_ref.get());
-  EXPECT_EQ(filepath, "LOG(INFO)");
+  EXPECT_EQ(filepath, "(stderr)");
 }
 
 TEST(DumpMlirModuleTest, Valid) {
   mlir::MLIRContext context;
-  mlir::OwningModuleRef module_ref =
+  mlir::OwningOpRef<mlir::ModuleOp> module_ref =
       mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
   setenv("TF_DUMP_GRAPH_PREFIX", testing::TmpDir().c_str(), 1);
   std::string expected_txt_module;
   {
     llvm::raw_string_ostream os(expected_txt_module);
-    module_ref->getOperation()->print(os);
+    module_ref->getOperation()->print(os,
+                                      mlir::OpPrintingFlags().useLocalScope());
     os.flush();
   }
 
@@ -67,6 +69,73 @@ TEST(DumpMlirModuleTest, Valid) {
   std::string file_txt_module;
   TF_ASSERT_OK(ReadFileToString(env, filepath, &file_txt_module));
   EXPECT_EQ(file_txt_module, expected_txt_module);
+}
+
+TEST(DumpCrashReproducerTest, NoEnvPrefix) {
+  mlir::MLIRContext context;
+  mlir::OwningOpRef<mlir::ModuleOp> module_ref =
+      mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
+  mlir::PassManager pm(&context);
+  unsetenv("TF_DUMP_GRAPH_PREFIX");
+
+  std::string filepath =
+      DumpCrashReproducerToFile("module", pm, module_ref.get());
+  EXPECT_EQ(filepath, "(TF_DUMP_GRAPH_PREFIX not specified)");
+}
+
+TEST(DumpCrashReproducerTest, LogInfo) {
+  mlir::MLIRContext context;
+  mlir::OwningOpRef<mlir::ModuleOp> module_ref =
+      mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
+  mlir::PassManager pm(&context);
+  setenv("TF_DUMP_GRAPH_PREFIX", "-", 1);
+
+  std::string filepath =
+      DumpCrashReproducerToFile("module", pm, module_ref.get());
+  EXPECT_EQ(filepath, "(stderr)");
+}
+
+TEST(DumpCrashReproducerTest, Valid) {
+  mlir::MLIRContext context;
+  mlir::OwningOpRef<mlir::ModuleOp> module_ref =
+      mlir::ModuleOp::create(mlir::UnknownLoc::get(&context));
+  mlir::PassManager pm(&context);
+  setenv("TF_DUMP_GRAPH_PREFIX", testing::TmpDir().c_str(), 1);
+  std::string expected_txt_module;
+  {
+    llvm::raw_string_ostream os(expected_txt_module);
+    os << "{-# external_resources: { mlir_reproducer: { pipeline: \"\", "
+          "disable_threading: true, verify_each: true } } #-}\n\n";
+    module_ref->getOperation()->print(os,
+                                      mlir::OpPrintingFlags().useLocalScope());
+    os.flush();
+  }
+
+  std::string filepath =
+      DumpCrashReproducerToFile("module", pm, module_ref.get());
+  ASSERT_NE(filepath, "(TF_DUMP_GRAPH_PREFIX not specified)");
+  ASSERT_NE(filepath, "LOG(INFO)");
+  ASSERT_NE(filepath, "(unavailable)");
+
+  Env* env = Env::Default();
+  std::string file_txt_module;
+  TF_ASSERT_OK(ReadFileToString(env, filepath, &file_txt_module));
+  EXPECT_EQ(file_txt_module, expected_txt_module);
+}
+
+TEST(DumpRawStringToFileTest, Valid) {
+  llvm::StringRef example = "module {\n}";
+  setenv("TF_DUMP_GRAPH_PREFIX", testing::TmpDir().c_str(), 1);
+
+  std::string filepath = DumpRawStringToFile("example", example);
+  ASSERT_NE(filepath, "(TF_DUMP_GRAPH_PREFIX not specified)");
+  ASSERT_NE(filepath, "LOG(INFO)");
+  ASSERT_NE(filepath, "(unavailable)");
+
+  Env* env = Env::Default();
+  std::string file_txt_module;
+  TF_ASSERT_OK(ReadFileToString(env, filepath, &file_txt_module));
+  EXPECT_EQ(file_txt_module, example);
 }
 
 }  // namespace

@@ -15,6 +15,7 @@ limitations under the License.
 
 #include <array>
 
+#include "tensorflow/compiler/tf2xla/mlir_xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
@@ -25,30 +26,14 @@ limitations under the License.
 namespace tensorflow {
 namespace {
 
-constexpr std::array<DataType, 2> kEinsumTypes = {{DT_BFLOAT16, DT_FLOAT}};
+constexpr std::array<DataType, 9> kEinsumTypes = {
+    {DT_INT32, DT_INT64, DT_UINT64, DT_HALF, DT_BFLOAT16, DT_FLOAT, DT_DOUBLE,
+     DT_COMPLEX64, DT_COMPLEX128}};
 
-class EinsumOp : public XlaOpKernel {
- public:
-  explicit EinsumOp(OpKernelConstruction* ctx) : XlaOpKernel(ctx) {
-    OP_REQUIRES_OK(ctx, ctx->GetAttr("equation", &equation_));
-  }
-
-  ~EinsumOp() override = default;
-
-  void Compile(XlaOpKernelContext* ctx) override {
-    xla::XlaOp lhs = ctx->Input(0);
-    xla::XlaOp rhs = ctx->Input(1);
-    const TensorShape a_shape = ctx->InputShape(0);
-    const TensorShape b_shape = ctx->InputShape(1);
-    ctx->SetOutput(0, xla::Einsum(lhs, rhs, equation_));
-  }
-
- private:
-  string equation_;
-  TF_DISALLOW_COPY_AND_ASSIGN(EinsumOp);
-};
-
-REGISTER_XLA_OP(Name("XlaEinsum").TypeConstraint("T", kEinsumTypes), EinsumOp);
+REGISTER_XLA_OP(Name("XlaEinsum").TypeConstraint("T", kEinsumTypes),
+                MlirXlaOpKernel);
+REGISTER_XLA_OP(Name("Einsum").TypeConstraint("T", kEinsumTypes),
+                MlirXlaOpKernel);
 
 }  // namespace
 }  // namespace tensorflow

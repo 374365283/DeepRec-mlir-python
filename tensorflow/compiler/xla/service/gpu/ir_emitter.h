@@ -36,6 +36,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/gpu/thunk.h"
 #include "tensorflow/compiler/xla/service/hlo_computation.h"
 #include "tensorflow/compiler/xla/service/hlo_instruction.h"
+#include "tensorflow/compiler/xla/service/llvm_ir/fused_ir_emitter.h"
 #include "tensorflow/compiler/xla/service/llvm_ir/ir_array.h"
 #include "tensorflow/compiler/xla/service/llvm_ir/ir_builder_mixin.h"
 #include "tensorflow/compiler/xla/service/llvm_ir/llvm_loop.h"
@@ -43,7 +44,6 @@ limitations under the License.
 #include "tensorflow/compiler/xla/statusor.h"
 #include "tensorflow/compiler/xla/types.h"
 #include "tensorflow/compiler/xla/xla_data.pb.h"
-#include "tensorflow/core/platform/types.h"
 
 namespace xla {
 namespace gpu {
@@ -68,17 +68,12 @@ namespace gpu {
 class IrEmitter : public DfsHloVisitorWithDefault,
                   public IrBuilderMixin<IrEmitter> {
  public:
-  using GeneratorForOperandIrArrays =
-      std::function<std::vector<llvm_ir::IrArray>()>;
-
   IrEmitter(const IrEmitter&) = delete;
   IrEmitter& operator=(const IrEmitter&) = delete;
 
   Status DefaultAction(HloInstruction* hlo) override;
   Status HandleConstant(HloInstruction* constant) override;
-  Status HandleBitcast(HloInstruction* bitcast) override;
   Status HandleGetTupleElement(HloInstruction* get_tuple_element) override;
-  Status HandleDot(HloInstruction* dot) override;
   Status HandleConvolution(HloInstruction* convolution) override;
   Status HandleFft(HloInstruction* fft) override;
   Status HandleAllReduce(HloInstruction* crs) override;
@@ -89,22 +84,17 @@ class IrEmitter : public DfsHloVisitorWithDefault,
   Status HandleRecv(HloInstruction* recv) override;
   Status HandleRecvDone(HloInstruction* recv_done) override;
   Status HandleParameter(HloInstruction* parameter) override;
-  Status HandleReduce(HloInstruction* reduce) override;
   Status HandleTuple(HloInstruction* tuple) override;
   Status HandleScatter(HloInstruction* scatter) override;
-  Status HandleSelect(HloInstruction* select) override;
-  Status HandleTupleSelect(HloInstruction* tuple_select) override;
   Status HandleFusion(HloInstruction* fusion) override;
   Status HandleCall(HloInstruction* call) override;
   Status HandleCustomCall(HloInstruction* custom_call) override;
-  Status HandleSoftmax(HloInstruction* softmax) override;
   Status HandleBatchNormInference(HloInstruction* batch_norm) override;
   Status HandleBatchNormTraining(HloInstruction* batch_norm) override;
   Status HandleBatchNormGrad(HloInstruction* batch_norm) override;
   Status HandleAddDependency(HloInstruction* add_dependency) override;
-  Status HandleAsyncOutSend(HloInstruction* async_out_send) override;
 
-  Status FinishVisit(HloInstruction* root) override { return Status::OK(); }
+  Status FinishVisit(HloInstruction* root) override { return OkStatus(); }
 
   llvm::IRBuilder<>* builder() { return &b_; }
 
@@ -127,8 +117,9 @@ class IrEmitter : public DfsHloVisitorWithDefault,
     return bindings_.GetIrArray(inst, consumer, shape_index);
   }
   // A convenient helper for calling HloToIrBindings::GetBasePointer.
-  llvm::Value* GetBasePointer(const HloInstruction& inst) const {
-    return bindings_.GetBasePointer(inst);
+  llvm::Value* GetBasePointer(const HloInstruction& inst,
+                              ShapeIndexView shape_index = {}) const {
+    return bindings_.GetBasePointer(inst, shape_index);
   }
 
   // Generates the IrArray for each output of an hlo instruction and returns
@@ -157,12 +148,22 @@ class IrEmitter : public DfsHloVisitorWithDefault,
   // atomicAdd(output_address, *source_address).
   Status EmitAtomicOperationForNestedComputation(
       const HloComputation& nested_computation, llvm::Value* output_address,
-      llvm::Value* source_address);
+      llvm::Value* source_address, llvm::Type* element_type);
 
   GpuElementalIrEmitter::NestedComputer GetNestedComputer() {
-    return std::bind(&IrEmitter::ComputeNestedElement, this,
-                     std::placeholders::_1, std::placeholders::_2);
+    return [&](const HloComputation& computation,
+               absl::Span<llvm::Value* const> parameter_elements) {
+      return ComputeNestedElement(computation, parameter_elements);
+    };
   }
+
+  StatusOr<std::vector<llvm::Value*>> ComputeNestedElement(
+      const HloComputation& computation,
+      absl::Span<llvm::Value* const> parameter_elements);
+
+  StatusOr<std::vector<llvm::Value*>> ComputeNestedElementFromAddrs(
+      const HloComputation& computation,
+      absl::Span<llvm::Value* const> parameter_elements_addrs);
 
   IrEmitterContext* ir_emitter_context_;
   llvm::Module* module_;
@@ -177,19 +178,13 @@ class IrEmitter : public DfsHloVisitorWithDefault,
   // Hlo configuration data used during code generation.
   const HloModuleConfig& hlo_module_config_;
 
- protected:
-  GeneratorForOperandIrArrays GetGeneratorForOperandIrArrays(
-      const HloInstruction* fusion) {
-    return [=]() {
-      std::vector<llvm_ir::IrArray> ir_arrays;
-      ir_arrays.reserve(fusion->operand_count());
-      absl::c_transform(fusion->operands(), std::back_inserter(ir_arrays),
-                        [&](const HloInstruction* operand) {
-                          return GetIrArray(*operand, *fusion);
-                        });
-      return ir_arrays;
-    };
-  }
+  // Bind all argument IrArrays of `fusion` to `fused_emitter`.
+  void BindFusionArguments(const HloInstruction* fusion,
+                           FusedIrEmitter* fused_emitter);
+
+  // Emit a fence for AMDGPU if necessary.
+  void MaybeEmitFenceForAMDGPU(llvm::AtomicOrdering atomic_ordering,
+                               const char* sync_scope_id);
 
  private:
   // A helper method for EmitAtomicOperationForNestedComputation. Certain
@@ -206,18 +201,15 @@ class IrEmitter : public DfsHloVisitorWithDefault,
   // small data types.
   Status EmitAtomicOperationUsingCAS(const HloComputation& computation,
                                      llvm::Value* output_address,
-                                     llvm::Value* source_address);
+                                     llvm::Value* source_address,
+                                     llvm::Type* element_type);
 
   // A helper method for HandleSort(). It adds the inner comparison loop where
   // we compare elements pointed to by 'keys_index' and 'compare_keys_index'.
-  void EmitCompareLoop(int64 dimension_to_sort,
+  void EmitCompareLoop(int64_t dimension_to_sort,
                        const llvm_ir::IrArray::Index& keys_index,
                        const llvm_ir::IrArray::Index& compare_keys_index,
                        const llvm_ir::IrArray& keys_array);
-
-  StatusOr<llvm::Value*> ComputeNestedElement(
-      const HloComputation& computation,
-      absl::Span<llvm::Value* const> parameter_elements);
 
   // Emits an atomic operation that implements `nested_computation` in the
   // sequentially consistent memory model. `output_address` and `source_address`
@@ -225,6 +217,15 @@ class IrEmitter : public DfsHloVisitorWithDefault,
   // atomicAdd(output_address, *source_address).
   StatusOr<llvm::Function*> EmitAtomicFunctionForNestedComputation(
       const HloComputation& nested_computation, llvm::Type* element_ir_type);
+
+  // A convenience method to determine whether or not IR is emitted for AMDGPU.
+  bool IsEmittingForAMDGPU() const;
+
+  // Emits atomic add operation for AMD GPU.
+  void EmitAMDGPUAtomicAdd(llvm::Value* output_address, llvm::Value* source);
+
+  // A convenience method to determine the proper sync scope for an atomic op.
+  llvm::SyncScope::ID DetermineSyncScope() const;
 
   // Map nested computations to emitted IR functions. This serves as a cache so
   // that IrEmitter does not emit multiple functions for the same

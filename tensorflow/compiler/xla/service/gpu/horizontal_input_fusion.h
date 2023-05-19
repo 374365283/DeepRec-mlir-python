@@ -20,18 +20,17 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/hlo_instruction.h"
 #include "tensorflow/compiler/xla/service/hlo_module.h"
 #include "tensorflow/compiler/xla/service/hlo_pass_interface.h"
-#include "tensorflow/core/platform/macros.h"
 
 namespace xla {
 namespace gpu {
 
 // This optimization pass horizontally fuses kInput fusions to both reduce the
 // kernel launch overhead and increase parallelism degree. See
-// GpuHorizontalLoopFusion for general description and motivation about
-// horizontal fusion. GpuHorizontalLoopFusion deals with kLoop fusions while
-// this pass deals kInput fusions.
+// GpuHorizontalFusion for general description and motivation about horizontal
+// fusion. GpuHorizontalFusion deals with kLoop fusions while this pass deals
+// with kInput fusions.
 //
-// Following GpuHorizontalLoopFusion, a simple yet effective heuristic is used
+// Following GpuHorizontalFusion, a simple yet effective heuristic is used
 // to search the fusion candidates while avoiding creating cycles. That is,
 // we simply search for fusion candidates by looking for instructions whose
 // outputs are all consumed by the same instruction. This catches the typical
@@ -45,7 +44,10 @@ class GpuHorizontalInputFusion : public HloModulePass {
     return "gpu_horizontal_input_fusion";
   }
 
-  StatusOr<bool> Run(HloModule* module) override;
+  using HloPassInterface::Run;
+  StatusOr<bool> Run(
+      HloModule* module,
+      const absl::flat_hash_set<absl::string_view>& execution_threads) override;
 
  private:
   StatusOr<bool> RunOnComputation(HloComputation*);

@@ -18,6 +18,7 @@ limitations under the License.
 
 #include "absl/strings/string_view.h"
 #include "llvm/IR/IRBuilder.h"
+#include "mlir/IR/MLIRContext.h"  // from @llvm-project
 #include "tensorflow/compiler/xla/service/cpu/cpu_options.h"
 #include "tensorflow/compiler/xla/service/cpu/target_machine_features.h"
 #include "tensorflow/compiler/xla/service/hlo_instruction.h"
@@ -25,8 +26,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/llvm_ir/ir_array.h"
 #include "tensorflow/compiler/xla/service/llvm_ir/llvm_loop.h"
 #include "tensorflow/compiler/xla/types.h"
-#include "tensorflow/core/lib/core/status.h"
-#include "tensorflow/core/platform/types.h"
+#include "tensorflow/tsl/platform/status.h"
 
 namespace xla {
 namespace cpu {
@@ -45,7 +45,7 @@ bool DotImplementationCanHandleTranspose(
 // Returns the index for an operand to `hlo` that should ideally be column
 // major.  Returns nullopt if there is no such operand or if `hlo` is not a dot
 // or a fusion containing a dot.
-absl::optional<int64> ProfitableToMakeDotOperandColumnMajor(
+std::optional<int64_t> ProfitableToMakeDotOperandColumnMajor(
     const HloInstruction& hlo);
 
 // Emit LLVM IR to perform the dot operation on lhs_array and rhs_array and
@@ -63,7 +63,7 @@ Status EmitDotOperation(const HloInstruction& dot,
                         const llvm_ir::IrArray& rhs_array,
                         const llvm_ir::IrArray* addend_array,
                         llvm::Value* executable_run_options_value,
-                        llvm::IRBuilder<>* b,
+                        llvm::IRBuilder<>* b, mlir::MLIRContext* mlir_context,
                         const HloModuleConfig& hlo_module_config,
                         const TargetMachineFeatures& target_machine_features);
 }  // namespace cpu

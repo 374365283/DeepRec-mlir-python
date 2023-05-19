@@ -28,8 +28,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/hlo_instruction.h"
 #include "tensorflow/compiler/xla/service/hlo_module.h"
 #include "tensorflow/compiler/xla/types.h"
-#include "tensorflow/core/lib/core/status.h"
-#include "tensorflow/core/platform/types.h"
+#include "tensorflow/tsl/platform/status.h"
 
 namespace xla {
 
@@ -42,6 +41,22 @@ namespace xla {
 // sense.
 class HloReachabilityMap {
  public:
+  // An opaque index that clients can use to make repeated operations for the
+  // same instruction faster, by calling GetIndex once for the instruction,
+  // and then calling the variants of other interfaces that take Index arguments
+  // rather than HloInstruction* arguments.
+  struct Index {
+   public:
+    bool operator==(Index other) const { return v == other.v; }
+    bool operator!=(Index other) const { return v != other.v; }
+
+   private:
+    friend class HloReachabilityMap;
+
+    // Index assigned for a particular instruction.  The value is used to index
+    // into the vector of BitVectors and the BitVectors themselves.
+    int v;
+  };
   // Sets up a graph with no edges and where the nodes correspond to the given
   // instructions.
   explicit HloReachabilityMap(
@@ -55,6 +70,18 @@ class HloReachabilityMap {
   // reachability. Trivially an instruction is reachable from itself.
   static std::unique_ptr<HloReachabilityMap> Build(
       const HloComputation* computation);
+
+  // Similar to the above Build operation except that it tries to identify
+  // paths between instructions that do not contain control instructions
+  // and multiple operands, i.e., b is_reachable a == true iff
+  // b = f(f(f(f(f(a), constant), constant), constant).
+  // Further, the only ops allowed in a path are basic math operations such
+  // as add, sub, mul, div.
+  static std::unique_ptr<HloReachabilityMap> BuildWithRestrictions(
+      const HloComputation* computation,
+      absl::FunctionRef<void(const HloInstruction*,
+                             std::vector<HloInstruction*>*)>
+          add_dependencies);
 
   // Set the reachability set of 'instruction' to the union of the reachability
   // sets of 'inputs'. Upon return, IsReachable(x, instruction) where
@@ -73,6 +100,16 @@ class HloReachabilityMap {
   void FastSetReachabilityToUnion(
       absl::Span<const HloInstruction* const> inputs,
       const HloInstruction* instruction);
+  // As above, but use Index instead if it's already looked up which is even
+  // faster since no hash map lookup will occur.
+  void FastSetReachabilityToUnion(absl::Span<const Index> input_indices,
+                                  Index index);
+
+  Index GetIndex(const HloInstruction* instruction) const {
+    Index i;
+    i.v = FindOrDie(indices_, GetKey(instruction));
+    return i;
+  }
 
   // Sets entry so that IsReachable(a, b) will return true
   //
@@ -80,7 +117,10 @@ class HloReachabilityMap {
   // matrix in the internal graph of this HloReachabilityMap to have an edge
   // from a to b and does not transitively update any other part of the
   // adjacency matrix.
-  void SetReachable(const HloInstruction* a, const HloInstruction* b);
+  void SetReachable(const HloInstruction* a, const HloInstruction* b) {
+    SetReachable(GetIndex(a), GetIndex(b));
+  }
+  void SetReachable(Index a, Index b);
 
   // Updates the given reachability map after the immediate predecessor set
   // (operands and control predecessors) of 'instruction' has changed.
@@ -90,13 +130,21 @@ class HloReachabilityMap {
   //
   // Note that this function only correctly answers queries about reachability
   // if the set of edges that have been provided to this class are transitive.
-  bool IsReachable(const HloInstruction* a, const HloInstruction* b) const;
+  bool IsReachable(const HloInstruction* a, const HloInstruction* b) const {
+    return IsReachable(GetIndex(a), GetIndex(b));
+  }
+  bool IsReachable(Index a, Index b) const { return GetBitVector(b).Get(a.v); }
 
   // Returns true if "b" is reachable from "a" or "a" is reachable from "b"
   //
   // Note that this function only correctly answers queries about reachability
   // if the set of edges that have been provided to this class are transitive.
-  bool IsConnected(const HloInstruction* a, const HloInstruction* b) const;
+  bool IsConnected(const HloInstruction* a, const HloInstruction* b) const {
+    return IsConnected(GetIndex(a), GetIndex(b));
+  }
+  bool IsConnected(Index a, Index b) const {
+    return IsReachable(a, b) || IsReachable(b, a);
+  }
 
   // Checks if an instruction is in the Reachability map.
   bool IsPresent(const HloInstruction* a) const {
@@ -110,7 +158,7 @@ class HloReachabilityMap {
 
  private:
   // A bit-vector implementation specialized for this use case which provides a
-  // fast bitwise OR operation not available in tensorflow::gtl::BitMap.
+  // fast bitwise OR operation not available in tsl::gtl::BitMap.
   class BitVector {
    public:
     BitVector() = default;
@@ -147,8 +195,8 @@ class HloReachabilityMap {
     }
 
    private:
-    using Word = uint64;
-    static const size_t kBits = 64;
+    using Word = uint64_t;
+    static constexpr size_t kBits = 64;
 
     // Number of bits in the bitvector.
     size_t size_;
@@ -158,26 +206,31 @@ class HloReachabilityMap {
 
   // Return the bitvector storing the reachability-to of the given instruction.
   const BitVector& GetBitVector(const HloInstruction* instruction) const {
-    return bit_vectors_[GetIndex(instruction)];
+    return GetBitVector(GetIndex(instruction));
   }
   BitVector& GetBitVector(const HloInstruction* instruction) {
-    return bit_vectors_[GetIndex(instruction)];
+    return GetBitVector(GetIndex(instruction));
   }
+
+  const BitVector& GetBitVector(Index index) const {
+    return bit_vectors_[index.v];
+  }
+  BitVector& GetBitVector(Index index) { return bit_vectors_[index.v]; }
 
   // Helper for SetReachabilityToUnion/FastSetReachabilityToUnion.
   void SetReachabilityToUnionHelper(
-      absl::Span<const HloInstruction* const> inputs,
-      const HloInstruction* instruction, BitVector* bit_vector);
+      absl::Span<const HloInstruction* const> inputs, Index index);
+  void SetReachabilityToUnionHelper(absl::Span<const Index> input_indices,
+                                    Index index);
 
-  uint64 GetKey(const HloInstruction* instruction) const {
-    uint64 unique_id = absl::bit_cast<uint32>(instruction->unique_id());
-    uint64 module_id =
-        absl::bit_cast<uint32>(instruction->parent()->parent()->unique_id());
+  uint64_t GetKey(const HloInstruction* instruction) const {
+    uint64_t unique_id = absl::bit_cast<uint32_t>(instruction->unique_id());
+    uint64_t module_id =
+        absl::bit_cast<uint32_t>(instruction->GetModule()->unique_id());
     return (module_id << 32) | unique_id;
   }
-  // Return the index of the given instruction. The value is used to index into
-  // the vector of BitVectors and the BitVectors themselves.
-  int GetIndex(const HloInstruction* instruction) const {
+  // Return the index of the given instruction.
+  int GetIndexInternal(const HloInstruction* instruction) const {
     return FindOrDie(indices_, GetKey(instruction));
   }
 
@@ -186,7 +239,7 @@ class HloReachabilityMap {
 
   // Dense assignment from HloInstruction::unique_id to number. These numbers
   // index into the bit_vectors_ vector and into the bits within a BitVector.
-  absl::flat_hash_map<uint64, int> indices_;
+  absl::flat_hash_map<uint64_t, int> indices_;
 
   // Bitvectors holding the reachability to each instruction. The bit vector for
   // instruction X includes ones for each instruction which X is reachable from.

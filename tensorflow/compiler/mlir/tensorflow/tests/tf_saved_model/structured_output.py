@@ -16,10 +16,6 @@
 # RUN: %p/structured_output | FileCheck %s
 
 # pylint: disable=missing-docstring,line-too-long
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import tensorflow.compat.v2 as tf
 from tensorflow.compiler.mlir.tensorflow.tests.tf_saved_model import common
 
@@ -109,7 +105,7 @@ class TestModule(tf.Module):
   # multiple return statements.
   #
   # CHECK:      func {{@[a-zA-Z_0-9]+}}(
-  # CHECK-SAME:   %arg0: tensor<f32> {tf_saved_model.index_path = [0]}
+  # CHECK-SAME:   %arg0: tensor<f32> {tf._user_specified_name = "x", tf_saved_model.index_path = [0]}
   # CHECK-SAME: ) -> (
   # CHECK-SAME:   tensor<1xf32> {tf_saved_model.index_path = ["x"]})
   # CHECK-SAME: attributes {{.*}} tf_saved_model.exported_names = ["f0006_multiple_return_statements"]

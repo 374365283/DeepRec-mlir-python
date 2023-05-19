@@ -27,10 +27,11 @@ limitations under the License.
 #include "absl/strings/str_cat.h"
 #include "absl/types/optional.h"
 #include "tensorflow/compiler/jit/flags.h"
-#include "tensorflow/compiler/jit/graphcycles/graphcycles.h"
 #include "tensorflow/compiler/jit/mark_for_compilation_pass.h"
 #include "tensorflow/compiler/jit/shape_inference_helpers.h"
+#include "tensorflow/compiler/jit/xla_cluster_util.h"
 #include "tensorflow/compiler/tf2xla/const_analysis.h"
+#include "tensorflow/compiler/xla/service/graphcycles/graphcycles.h"
 #include "tensorflow/compiler/xla/status_macros.h"
 #include "tensorflow/core/common_runtime/device_factory.h"
 #include "tensorflow/core/common_runtime/function.h"
@@ -61,22 +62,7 @@ const char* const kXlaNumConstantArgsAttr = "_XlaNumConstantArgs";
 const char* const kXlaNumResourceArgsAttr = "_XlaNumResourceArgs";
 const char* const kXlaHostTransferSequencerAttr =
     "_xla_host_transfer_sequencer";
-
-void SortControlInputs(GraphDef* gdef) {
-  int64 num_nodes = gdef->node_size();
-  for (int64 i = 0; i < num_nodes; ++i) {
-    NodeDef* node = gdef->mutable_node(i);
-    // Stable sort control inputs and leave the order of data inputs unchanged.
-    std::stable_sort(node->mutable_input()->begin(),
-                     node->mutable_input()->end(),
-                     [](const string& a, const string& b) {
-                       bool a_is_control = absl::StartsWith(a, "^");
-                       bool b_is_control = absl::StartsWith(b, "^");
-                       return (!a_is_control && b_is_control) ||
-                              (a_is_control && b_is_control && a < b);
-                     });
-  }
-}
+const char* const kXlaHasReferenceVarsAttr = "_XlaHasReferenceVars";
 
 namespace {
 
@@ -139,9 +125,6 @@ struct OutputInputTensorPairHasher {
 // everything to use it.
 static const char* const kArgOp = "_Arg";
 static const char* const kRetValOp = "_Retval";
-static const char* const kHostComputeOp = "XlaHostCompute";
-static const char* const kSendFromHostOp = "_XlaSendFromHost";
-static const char* const kRecvAtHostOp = "_XlaRecvAtHost";
 
 class Encapsulator {
  public:
@@ -484,9 +467,7 @@ Status Encapsulator::Subgraph::RecordArg(
     Status s = builder.Finalize(&arg_def);
     if (!s.ok()) return s;
 
-    Node* arg = graph_->AddNode(arg_def, &s);
-    if (!s.ok()) return s;
-
+    TF_ASSIGN_OR_RETURN(Node * arg, graph_->AddNode(arg_def));
     src_arg_pairs->push_back({src_node, arg});
     args_.push_back(arg);
   }
@@ -495,7 +476,7 @@ Status Encapsulator::Subgraph::RecordArg(
   int dst_slot = edge->dst_input();
   args_by_dst_[InputTensor(dst_node, dst_slot)] = arg_index;
   graph_->AddEdge(args_[arg_index], 0, dst_image, dst_slot);
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Encapsulator::Subgraph::RecordControlResult(
@@ -504,7 +485,7 @@ Status Encapsulator::Subgraph::RecordControlResult(
   Node* src_node = edge->src();
   Node* src_image = node_images.at(src_node);
   control_output_nodes_.insert(src_image->name());
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Encapsulator::Subgraph::RecordResult(
@@ -529,12 +510,10 @@ Status Encapsulator::Subgraph::RecordResult(
     builder.Input(src_image->name(), src_slot, dtype);
     Status s = builder.Finalize(&ret_def);
     if (!s.ok()) return s;
-    Node* ret = graph_->AddNode(ret_def, &s);
-    if (!s.ok()) return s;
-
+    TF_ASSIGN_OR_RETURN(Node * ret, graph_->AddNode(ret_def));
     graph_->AddEdge(src_image, src_slot, ret, 0);
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Encapsulator::Subgraph::MakeSequencingNode(const string& subgraph_name,
@@ -548,10 +527,9 @@ Status Encapsulator::Subgraph::MakeSequencingNode(const string& subgraph_name,
     Status s = builder.Finalize(&seq_def);
     if (!s.ok()) return s;
 
-    sequencer_ = graph_out->AddNode(seq_def, &s);
-    if (!s.ok()) return s;
+    TF_ASSIGN_OR_RETURN(sequencer_, graph_out->AddNode(seq_def));
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 void Encapsulator::Subgraph::ConnectSequencerToCallNode(Graph* graph_out) {
@@ -612,11 +590,11 @@ Status Encapsulator::Subgraph::BuildFunctionDef(
   function_def_name_ = name;
 
   FunctionDef fdef;
-  auto lookup = [this](const Node* node) -> absl::optional<string> {
+  auto lookup = [this](const Node* node) -> std::optional<string> {
     if (control_output_nodes_.contains(node->name())) {
       return absl::make_optional(node->name());
     }
-    return absl::nullopt;
+    return std::nullopt;
   };
   // Verify that the graph has well-formed control flow structure.
   std::vector<ControlFlowInfo> dummy;
@@ -636,7 +614,7 @@ Status Encapsulator::Subgraph::BuildFunctionDef(
   } else if (!FunctionDefsEqual(*original_fdef, fdef)) {
     TF_RETURN_IF_ERROR(library->ReplaceFunction(name, fdef));
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Encapsulator::Subgraph::ReplaceFunctionDef(
@@ -655,35 +633,31 @@ Status Encapsulator::Subgraph::ReplaceFunctionDef(
   }
 
   TF_RETURN_IF_ERROR(library->ReplaceFunction(name, fdef));
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Encapsulator::Subgraph::AddFunctionCallNode(
     const std::unordered_map<const Node*, Node*>& node_images,
     Graph* graph_out) {
-  Status s;
-  call_node_ = graph_out->AddNode(call_node_def_, &s);
-  if (!s.ok()) return s;
+  TF_ASSIGN_OR_RETURN(call_node_, graph_out->AddNode(call_node_def_));
 
   // Copy the assigned device and the key_annotation over.
   call_node_->set_assigned_device_name(device_);
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Encapsulator::GetFunctionNameAttr(Node const* node, string* attr) const {
   AttrSlice attrs = node->attrs();
   attr->clear();
-  bool found_group_attribute = false;
   for (const auto& node_attr : attrs) {
     if (node_attr.first == group_attribute_) {
       TF_RETURN_IF_ERROR(AttrValueHasType(node_attr.second, "string"));
       *attr = node_attr.second.s();
-      found_group_attribute = true;
       break;
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 bool IsInSubgraph(const string& func_id) { return !func_id.empty(); }
@@ -700,7 +674,7 @@ Status Encapsulator::CopySubgraphNodes(
     image->ClearAttr(group_attribute_);
     (*node_images)[node] = image;
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Encapsulator::CopySubgraphEdges(
@@ -771,7 +745,7 @@ Status Encapsulator::CopySubgraphEdges(
       }
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Encapsulator::SplitIntoSubgraphs(FunctionLibraryDefinition* library) {
@@ -788,7 +762,6 @@ Status Encapsulator::SplitIntoSubgraphs(FunctionLibraryDefinition* library) {
 
   TF_RETURN_IF_ERROR(CopySubgraphNodes(&node_images));
   TF_RETURN_IF_ERROR(CopySubgraphEdges(node_images, &src_arg_pairs));
-
   MarkGuaranteedConstants(*graph_in_, src_arg_pairs);
 
   for (auto& entry : subgraphs_) {
@@ -817,7 +790,7 @@ Status Encapsulator::BuildFunctionDefs(
     TF_RETURN_IF_ERROR(subgraph.BuildFunctionDef(
         name, rewrite_subgraph_fn, reuse_existing_functions, library));
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Encapsulator::CopyNodesToOutputGraph(
@@ -834,7 +807,7 @@ Status Encapsulator::CopyNodesToOutputGraph(
   }
   (*node_images)[graph_in_->source_node()] = graph_out->source_node();
   (*node_images)[graph_in_->sink_node()] = graph_out->sink_node();
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Encapsulator::AddFunctionCallNodes(
@@ -844,7 +817,7 @@ Status Encapsulator::AddFunctionCallNodes(
     TF_RETURN_IF_ERROR(
         subgraph_entry.second.AddFunctionCallNode(node_images, graph_out));
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Encapsulator::FindOutputImageOfEdgeSrc(
@@ -860,7 +833,7 @@ Status Encapsulator::FindOutputImageOfEdgeSrc(
     // the output graph.
     *src_image = node_images.at(original_src_node);
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 int Encapsulator::FindOutputSlotOfEdgeSrc(const string& src_func_id,
@@ -891,7 +864,7 @@ Status Encapsulator::FindOutputImageOfEdgeDst(
     // in the output graph.
     *dst_image = node_images.at(original_dst_node);
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 int Encapsulator::FindOutputSlotOfEdgeDst(const string& src_func_id,
@@ -933,7 +906,7 @@ Status Encapsulator::CopyEdgeToOutputGraph(
                                 /* allow_duplicates= */ true);
     }
 
-    return Status::OK();
+    return OkStatus();
   }
 
   int src_output = FindOutputSlotOfEdgeSrc(src_func_id, dst_func_id, edge);
@@ -947,7 +920,7 @@ Status Encapsulator::CopyEdgeToOutputGraph(
           .second) {
     graph_out->AddEdge(src_image, src_output, dst_image, dst_input);
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Encapsulator::AddEdgesToOutputGraph(
@@ -984,7 +957,7 @@ Status Encapsulator::AddEdgesToOutputGraph(
     subgraph.ConnectSequencerToCallNode(graph_out);
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 namespace {
@@ -1091,7 +1064,7 @@ Status Encapsulator::MakePrunedGraphCopyAndInline(
                                           fbody.get(), inline_opts));
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Encapsulator::BuildOutputGraph(Graph* graph_out,
@@ -1103,7 +1076,7 @@ Status Encapsulator::BuildOutputGraph(Graph* graph_out,
   TF_RETURN_IF_ERROR(AddFunctionCallNodes(node_images, graph_out));
   TF_RETURN_IF_ERROR(AddEdgesToOutputGraph(node_images, graph_out));
 
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // anonymous namespace
@@ -1124,7 +1097,7 @@ Status EncapsulateSubgraphsInFunctions(
   TF_RETURN_IF_ERROR(encapsulator.BuildOutputGraph(out.get(), library));
 
   *graph_out = std::move(out);
-  return Status::OK();
+  return OkStatus();
 }
 
 // Finds the types of the _Arg nodes, indexed by position.
@@ -1133,13 +1106,14 @@ static Status GetArgTypes(const Graph& graph, DataTypeVector* types) {
     if (n->type_string() == kArgOp) {
       int index;
       TF_RETURN_IF_ERROR(GetNodeAttr(n->attrs(), "index", &index));
-      if (index < 0 || index >= types->size()) {
+      const int num_types = types->size();
+      if (index < 0 || index >= num_types) {
         return errors::InvalidArgument("Invalid argument number");
       }
       (*types)[index] = n->output_type(0);
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 // Renumber the indices of _Arg nodes in a graph, according to
@@ -1150,13 +1124,14 @@ static Status RenumberArguments(Graph* graph,
     if (n->type_string() == kArgOp) {
       int index;
       TF_RETURN_IF_ERROR(GetNodeAttr(n->attrs(), "index", &index));
-      if (index < 0 || index >= permutation.size()) {
+      const int permutation_size = permutation.size();
+      if (index < 0 || index >= permutation_size) {
         return errors::InvalidArgument("Invalid argument number");
       }
       n->AddAttr("index", permutation[index]);
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status EncapsulateSubgraphsPass::Run(
@@ -1165,6 +1140,18 @@ Status EncapsulateSubgraphsPass::Run(
   if (VLOG_IS_ON(1)) {
     DumpGraphToFile("encapsulate_subgraphs_before", **options.graph,
                     options.flib_def);
+  }
+
+  // TODO(b/195757077): Remove this once there is a better way to disable
+  // GraphOptimizationPasses that are not needed due to MLIR bridge.
+  for (Node* n : (*options.graph)->nodes()) {
+    // Skip the pass if we found TPUExecute or TPUExecuteAndUpdateVariables ops
+    // in the graph, which indicates the graph is produced by TPU TF-XLA bridge
+    // and doesn't require auto clustering.
+    if (n->type_string() == "TPUExecute" ||
+        n->type_string() == "TPUExecuteAndUpdateVariables") {
+      return OkStatus();
+    }
   }
 
   std::unique_ptr<Graph> graph_out;
@@ -1193,12 +1180,13 @@ Status EncapsulateSubgraphsPass::Run(
   }
 
   std::unique_ptr<DeviceMgr> device_mgr =
-      absl::make_unique<DeviceMgr>(std::move(devices));
-  OptimizerOptions opts;
+      std::make_unique<StaticDeviceMgr>(std::move(devices));
+  const auto* config = &options.session_options->config;
   std::unique_ptr<ProcessFunctionLibraryRuntime> pflr(
-      new ProcessFunctionLibraryRuntime(device_mgr.get(),
-                                        options.session_options->env,
-                                        TF_GRAPH_DEF_VERSION, library, opts));
+      new ProcessFunctionLibraryRuntime(
+          device_mgr.get(), options.session_options->env,
+          /*config=*/config, TF_GRAPH_DEF_VERSION, library,
+          config->graph_options().optimizer_options()));
   FunctionLibraryRuntime* flr =
       pflr->GetFLR("/job:localhost/replica:0/task:0/device:CPU:0");
   if (flr == nullptr) {
@@ -1296,7 +1284,7 @@ Status EncapsulateSubgraphsPass::Run(
         AddNodeAttr(kXlaCompiledKernelAttr, true, node);
         AddNodeAttr(kXlaNumConstantArgsAttr, num_consts, node);
         AddNodeAttr(kXlaNumResourceArgsAttr, num_resources, node);
-        return Status::OK();
+        return OkStatus();
       };
 
   TF_RETURN_WITH_CONTEXT_IF_ERROR(
@@ -1304,14 +1292,22 @@ Status EncapsulateSubgraphsPass::Run(
           kXlaClusterAttr, **options.graph, rewrite_subgraph,
           /*reuse_existing_functions=*/false, &graph_out, library),
       "EncapsulateSubgraphsPass failed");
-
   if (VLOG_IS_ON(1)) {
     DumpGraphToFile("encapsulate_subgraphs_after", *graph_out,
                     options.flib_def);
   }
 
   *options.graph = std::move(graph_out);
-  return Status::OK();
+
+  TF_ASSIGN_OR_RETURN(absl::flat_hash_set<Node*> ref_related_nodes,
+                      GetNodesRelatedToRefVariables(**options.graph, flr));
+  for (Node* node : (*options.graph)->nodes()) {
+    bool has_ref_vars = ref_related_nodes.contains(node);
+    node->AddAttr(kXlaHasReferenceVarsAttr, has_ref_vars);
+    VLOG(3) << "Has ref vars = " << has_ref_vars
+            << ", node: " << node->def().DebugString();
+  }
+  return OkStatus();
 }
 
 bool IsXlaCompiledKernel(const Node& node) {

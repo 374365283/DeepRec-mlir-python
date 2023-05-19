@@ -12,9 +12,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#include "tensorflow/compiler/tf2tensorrt/common/utils.h"
+#include "tensorflow/compiler/xla/stream_executor/platform/dso_loader.h"
 #include "tensorflow/core/platform/env.h"
-#include "tensorflow/stream_executor/platform/dso_loader.h"
 #include "third_party/tensorrt/NvInferPlugin.h"
 
 // Implements the TensorRT API by forwarding to TensorRT loaded from the DSO.
@@ -29,7 +28,7 @@ void* GetDsoHandle() {
     auto handle_or =
         stream_executor::internal::DsoLoader::GetNvInferPluginDsoHandle();
     if (!handle_or.ok()) return nullptr;
-    return handle_or.ValueOrDie();
+    return handle_or.value();
   }();
   return handle;
 #endif
@@ -51,10 +50,10 @@ void LogFatalSymbolNotFound(const char* symbol_name) {
 }
 }  // namespace
 
-#if IS_TRT_VERSION_GE(5, 1, 0, 0)
-#include "tensorflow/compiler/tf2tensorrt/stub/NvInferPlugin_5_1.inc"
-#elif IS_TRT_VERSION_GE(5, 0, 0, 0)
-#include "tensorflow/compiler/tf2tensorrt/stub/NvInferPlugin_5_0.inc"
+#if NV_TENSORRT_MAJOR < 7
+#error TensorRT version earlier than 7 is not supported.
+#elif NV_TENSORRT_MAJOR == 7 || NV_TENSORRT_MAJOR == 8
+#include "tensorflow/compiler/tf2tensorrt/stub/NvInferPlugin_7_0.inc"
 #else
-#error TensorRT version earlier than 5 is not supported.
+#error This version of TensorRT is not supported.
 #endif

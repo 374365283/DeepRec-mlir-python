@@ -15,8 +15,6 @@ limitations under the License.
 
 #include "tensorflow/compiler/jit/partially_decluster_pass.h"
 
-#include <queue>
-
 #include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/strings/str_cat.h"
@@ -29,35 +27,11 @@ limitations under the License.
 #include "tensorflow/core/framework/memory_types.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/graph/graph_node_util.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/public/version.h"
-#include "tensorflow/core/util/env_var.h"
 
 namespace tensorflow {
-
-absl::flat_hash_set<string> GetBlacklistedDynamicOps() {
-  absl::flat_hash_set<string> result{"Where", "Unique"};
-  string blacklisted_ops;
-  TF_CHECK_OK(ReadStringFromEnvVar("TF_XLA_DYNAMIC_OPS", "", &blacklisted_ops));
-  if (!blacklisted_ops.empty()) {
-    for (auto op : absl::StrSplit(blacklisted_ops, ',')) {
-      result.insert(string(op));
-    }
-  }
-  return result;
-}
-
-bool DeclusterPossibleDynamicOps() {
-  static bool decluster = [] {
-    bool to_decluster = false;
-    TF_CHECK_OK(
-        tensorflow::ReadBoolFromEnvVar("TF_XLA_DECLUSTER_POSSIBLE_DYNAMIC_OPS",
-                                       /*default_val=*/false, &to_decluster));
-    return to_decluster;
-  }();
-  return decluster;
-}
-
 namespace {
 
 bool NotBackedge(const Edge& edge) { return !edge.src()->IsNextIteration(); }
@@ -73,7 +47,7 @@ Status FindNodesToDecluster(const Graph& graph,
   MemoryTypeVector input_mtypes, output_mtypes;
 
   for (Node* n : post_order) {
-    absl::optional<absl::string_view> from_cluster = GetXlaClusterForNode(*n);
+    std::optional<absl::string_view> from_cluster = GetXlaClusterForNode(*n);
     if (!from_cluster) {
       continue;
     }
@@ -131,15 +105,15 @@ Status FindNodesToDecluster(const Graph& graph,
       // Check if `dst` is in a different cluster, unclustered, or about to be
       // partially declustered (here we rely on the post-order traversal order).
       // If yes, decluster `n` to avoid the device-to-host memcpy.
-      absl::optional<absl::string_view> dst_cluster =
-          result->count(dst) ? absl::nullopt : GetXlaClusterForNode(*dst);
+      std::optional<absl::string_view> dst_cluster =
+          result->count(dst) ? std::nullopt : GetXlaClusterForNode(*dst);
       if (from_cluster != dst_cluster) {
         CHECK(result->insert(n).second);
         break;
       }
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status PartiallyDeclusterNode(Graph* graph, Node* n) {
@@ -151,7 +125,7 @@ Status PartiallyDeclusterNode(Graph* graph, Node* n) {
     }
 
     Node* dst = out_edge->dst();
-    absl::optional<absl::string_view> dst_cluster_name =
+    std::optional<absl::string_view> dst_cluster_name =
         GetXlaClusterForNode(*dst);
     if (dst_cluster_name != cluster_name) {
       out_edges_to_clone.push_back(out_edge);
@@ -164,10 +138,8 @@ Status PartiallyDeclusterNode(Graph* graph, Node* n) {
   ndef.set_name(absl::StrCat(n->name(), "/declustered"));
   MergeDebugInfo(NodeDebugInfo(n->def()), &ndef);
   RemoveFromXlaCluster(&ndef);
-  Status s;
-  Node* cloned_node = graph->AddNode(ndef, &s);
+  TF_ASSIGN_OR_RETURN(Node * cloned_node, graph->AddNode(ndef));
   cloned_node->set_assigned_device_name(n->assigned_device_name());
-  TF_RETURN_IF_ERROR(s);
 
   for (const Edge* in_edge : n->in_edges()) {
     graph->AddEdge(in_edge->src(), in_edge->src_output(), cloned_node,
@@ -184,7 +156,7 @@ Status PartiallyDeclusterNode(Graph* graph, Node* n) {
     graph->RemoveNode(n);
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 // Clones nodes to outside their cluster to avoid device-to-host copies.  For
@@ -249,15 +221,15 @@ Status PartiallyDeclusterGraph(Graph* graph) {
       FindNodesToDecluster(*graph, &nodes_to_partially_decluster, post_order));
   CHECK(nodes_to_partially_decluster.empty());
 
-  return Status::OK();
+  return OkStatus();
 }
 }  // namespace reduce_device_to_host_copies
 
 namespace reduce_recompilation {
 bool IsIntraClusterEdge(const Edge& edge) {
-  absl::optional<absl::string_view> src_cluster_name =
+  std::optional<absl::string_view> src_cluster_name =
       GetXlaClusterForNode(*edge.src());
-  absl::optional<absl::string_view> dst_cluster_name =
+  std::optional<absl::string_view> dst_cluster_name =
       GetXlaClusterForNode(*edge.dst());
   return src_cluster_name.has_value() && src_cluster_name == dst_cluster_name;
 }
@@ -279,12 +251,12 @@ Status MustCompileNode(const Node* n, bool* must_compile) {
 
   if (IsMustCompileDevice(device_type)) {
     *must_compile = true;
-    return Status::OK();
+    return OkStatus();
   }
 
   // We must compile `n` if it does not have a TensorFlow kernel.
   *must_compile = !FindKernelDef(device_type, n->def(), nullptr, nullptr).ok();
-  return Status::OK();
+  return OkStatus();
 }
 
 // Declusters nodes to reduce the number of times we think we need to recompile
@@ -321,8 +293,8 @@ Status PartiallyDeclusterGraph(Graph* graph,
                                Env* env) {
   std::vector<bool> compile_time_const_nodes(graph->num_node_ids());
   OptimizerOptions opts;
-  auto pflr = absl::make_unique<ProcessFunctionLibraryRuntime>(
-      nullptr, env, TF_GRAPH_DEF_VERSION, flib_def, opts);
+  auto pflr = std::make_unique<ProcessFunctionLibraryRuntime>(
+      nullptr, env, /*config=*/nullptr, TF_GRAPH_DEF_VERSION, flib_def, opts);
   FunctionLibraryRuntime* lib_runtime =
       pflr->GetFLR(ProcessFunctionLibraryRuntime::kDefaultFLRDevice);
   TF_RETURN_IF_ERROR(BackwardsConstAnalysis(*graph, nullptr,
@@ -340,7 +312,7 @@ Status PartiallyDeclusterGraph(Graph* graph,
     absl::string_view cluster_name = *GetXlaClusterForNode(*n);
     bool node_on_cluster_edge =
         absl::c_all_of(n->in_edges(), [&](const Edge* e) {
-          absl::optional<absl::string_view> incoming_cluster =
+          std::optional<absl::string_view> incoming_cluster =
               GetXlaClusterForNode(*e->src());
           return !incoming_cluster || *incoming_cluster != cluster_name;
         });
@@ -359,7 +331,7 @@ Status PartiallyDeclusterGraph(Graph* graph,
     // remove Input, OP, Shape and F from the cluster, if F is a many-to-one
     // function.
     //
-    // Note that we do do the right thing for graphs like:
+    // Note that we do the right thing for graphs like:
     //
     //   Input -> F0 -> F1 -> Reshape
     //
@@ -369,13 +341,29 @@ Status PartiallyDeclusterGraph(Graph* graph,
       bool must_compile_node;
       TF_RETURN_IF_ERROR(MustCompileNode(n, &must_compile_node));
       if (!must_compile_node) {
-        VLOG(3) << "Declustering must-be-constant node " << n->name();
-        RemoveFromXlaCluster(n);
+        if (n->IsConstant()) {
+          // We must decluster Const nodes that have an input control edge from
+          // a different device, because this node may be part of the
+          // co-ordination of while loops between devices.
+          for (auto it : n->in_edges()) {
+            if (!it->src()->assigned_device_name().empty() &&
+                it->src()->assigned_device_name() !=
+                    n->assigned_device_name()) {
+              VLOG(3) << "Declustering Const with cross-device control input "
+                      << n->name();
+              RemoveFromXlaCluster(n);
+              break;
+            }
+          }
+        } else {
+          VLOG(3) << "Declustering must-be-constant node " << n->name();
+          RemoveFromXlaCluster(n);
+        }
       }
     }
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 }  // namespace reduce_recompilation
 
@@ -392,7 +380,7 @@ Status PartiallyDeclusterGraph(Graph* graph) {
       continue;
     }
 
-    absl::optional<absl::string_view> cluster = GetXlaClusterForNode(*n);
+    std::optional<absl::string_view> cluster = GetXlaClusterForNode(*n);
     if (!cluster.has_value()) {
       continue;
     }
@@ -409,167 +397,9 @@ Status PartiallyDeclusterGraph(Graph* graph) {
             << " because it is a root shape consumer";
     RemoveFromXlaCluster(n);
   }
-  return Status::OK();
+  return OkStatus();
 }
 }  // namespace decluster_root_shape_consumers
-
-namespace decluster_possible_dynamic_ops {
-Status PopulateReachableDynamicNodes(
-    const Node* src_dynamic_node, std::unordered_map<string, bool>& visited,
-    std::vector<const Node*>& candidate_dynamic_nodes) {
-  VLOG(2) << "Trying to populate candidate dynamic nodes using "
-          << src_dynamic_node->def().op() << "(" << src_dynamic_node->name()
-          << ")"
-          << " as source of dynamism ...";
-  for (auto edge : src_dynamic_node->out_edges()) {
-    absl::optional<absl::string_view> consumer_cluster =
-        GetXlaClusterForNode(*edge->dst());
-    if (!consumer_cluster.has_value()) {
-      VLOG(2) << "One of the out edges of src " << src_dynamic_node->def().op()
-              << "(" << src_dynamic_node->name() << ")"
-              << " is " << edge->dst()->def().op() << "(" << edge->dst()->name()
-              << ")"
-              << " and doesn't feed into any cluster.";
-      continue;
-    } else {
-      VLOG(2) << "One of the out edges of src " << src_dynamic_node->def().op()
-              << "(" << src_dynamic_node->name() << ")"
-              << " is " << edge->dst()->def().op() << "(" << edge->dst()->name()
-              << ")"
-              << " and feeds into " << *consumer_cluster
-              << ". Hence, Looking for reachable nodes only within "
-              << *consumer_cluster;
-    }
-
-    if (visited[edge->dst()->name()]) continue;
-
-    std::queue<const Node*> queue;
-    queue.push(edge->dst());
-    while (!queue.empty()) {
-      const Node* n = queue.front();
-      queue.pop();
-      if (visited[n->name()]) continue;
-      visited[n->name()] = true;
-      absl::optional<absl::string_view> cluster_n = GetXlaClusterForNode(*n);
-      CHECK_EQ(*cluster_n, *consumer_cluster);
-      VLOG(2) << "Possible dynamic node " << n->def().op() << " (" << n->name()
-              << ")"
-              << " in " << *cluster_n << ". Adding to candidate dynamic nodes.";
-      candidate_dynamic_nodes.push_back(n);
-
-      for (const Node* out_node : n->out_nodes()) {
-        VLOG(2) << "Examining " << out_node->def().op() << "("
-                << out_node->name() << ")"
-                << " out node of " << n->def().op() << " (" << n->name() << ")";
-        if (GetXlaClusterForNode(*out_node).has_value() &&
-            (*GetXlaClusterForNode(*out_node) == *consumer_cluster)) {
-          VLOG(2) << out_node->def().op() << "(" << out_node->name()
-                  << ") which is in " << *GetXlaClusterForNode(*out_node)
-                  << " is poisonable by " << src_dynamic_node->def().op() << "("
-                  << src_dynamic_node->name() << ")";
-          queue.push(out_node);
-        }
-      }
-    }
-  }
-  return Status::OK();
-}
-
-Status PopulatePossibleDynamicNodes(
-    Graph* graph, std::vector<const Node*>& candidate_dynamic_nodes) {
-  VLOG(2) << "Generating list of possible dynamic nodes...";
-  std::unordered_map<string, bool> visited;
-  visited.reserve(graph->num_node_ids());
-  for (const Node* v_n : graph->op_nodes()) {
-    visited[v_n->name()] = false;
-  }
-  absl::flat_hash_set<string> blacklisted_ops =
-      tensorflow::GetBlacklistedDynamicOps();
-  for (const Node* b_node : graph->op_nodes()) {
-    if (visited[b_node->name()]) continue;
-    visited[b_node->name()] = true;
-    if (blacklisted_ops.find(b_node->def().op()) == blacklisted_ops.end()) {
-      continue;
-    }
-
-    absl::optional<absl::string_view> incoming_cluster =
-        GetXlaClusterForNode(*b_node);
-
-    if (VLOG_IS_ON(3)) {
-      VLOG(3) << "Examining whether " << b_node->def().op() << " ("
-              << b_node->name()
-              << ") found in the blacklist is on the edge of a cluster.";
-      if (!incoming_cluster.has_value()) {
-        VLOG(3) << b_node->name() << " node found "
-                << " which is unclustered. ";
-      } else {
-        VLOG(3) << b_node->name() << " node found in " << *incoming_cluster
-                << ".";
-      }
-    }
-
-    bool is_node_blacklisted = false;
-    for (auto edge : b_node->out_edges()) {
-      absl::optional<absl::string_view> consumer_cluster =
-          GetXlaClusterForNode(*edge->dst());
-
-      // Exit right away if there is no consumer cluster.
-      if (!consumer_cluster.has_value()) continue;
-
-      // !incoming_cluster.has_value() implies b_node is unclustered but on the
-      // edge of a cluster. If !incoming_cluster.has_value() is true, then lazy
-      // evaluation will ensure that *incoming_cluster deref is not computed.
-      // Otherwise, if incoming_cluster.has_value() is true, *incoming_cluster
-      // != *consumer_cluster will imply b_node is a different cluster but on
-      // edge of another cluster.
-      if (!incoming_cluster.has_value() ||
-          *incoming_cluster != *consumer_cluster) {
-        VLOG(3) << "Out edge of " << b_node->def().op() << " ("
-                << b_node->name() << ")"
-                << " is " << edge->dst()->name() << " and is in "
-                << *consumer_cluster << ".";
-        is_node_blacklisted = true;
-        break;
-      }
-    }
-
-    if (!is_node_blacklisted) {
-      VLOG(2) << b_node->def().op() << "(" << b_node->name() << ")"
-              << " is in the blacklist but not on the edge of a cluster.";
-      continue;
-    }
-    VLOG(1) << "We have found a blacklisted op " << b_node->def().op() << "("
-            << b_node->name()
-            << ") that can be used to analyse possible dynamic nodes in the "
-               "graph based on reachability.";
-
-    TF_RETURN_IF_ERROR(PopulateReachableDynamicNodes(b_node, visited,
-                                                     candidate_dynamic_nodes));
-  }
-  return Status::OK();
-}
-
-Status PartiallyDeclusterGraph(Graph* graph) {
-  std::vector<const Node*> candidate_dynamic_nodes;
-  TF_RETURN_IF_ERROR(
-      PopulatePossibleDynamicNodes(graph, candidate_dynamic_nodes));
-  std::vector<Node*> rpo;
-  GetReversePostOrder(*graph, &rpo, /*stable_comparator=*/NodeComparatorName(),
-                      /*edge_filter=*/NotBackedge);
-  for (Node* node : rpo) {
-    auto node_it = std::find(candidate_dynamic_nodes.begin(),
-                           candidate_dynamic_nodes.end(), node);
-    if (node_it != candidate_dynamic_nodes.end()) {
-      VLOG(1) << "Declustering " << node->def().op() << " " << node->name()
-              << " from " << *GetXlaClusterForNode(*node)
-              << " due to possible dynamic nature ";
-      RemoveFromXlaCluster(node);
-    }
-  }
-  return Status::OK();
-}
-
-}  // namespace decluster_possible_dynamic_ops
 }  // namespace
 
 Status PartiallyDeclusterPass::Run(
@@ -580,10 +410,6 @@ Status PartiallyDeclusterPass::Run(
   // invalid.
 
   Graph* graph = options.graph->get();
-  if (DeclusterPossibleDynamicOps()) {
-    TF_RETURN_IF_ERROR(
-        decluster_possible_dynamic_ops::PartiallyDeclusterGraph(graph));
-  }
 
   TF_RETURN_IF_ERROR(
       reduce_device_to_host_copies::PartiallyDeclusterGraph(graph));
@@ -604,6 +430,6 @@ Status PartiallyDeclusterPass::Run(
   TF_RETURN_IF_ERROR(
       decluster_root_shape_consumers::PartiallyDeclusterGraph(graph));
 
-  return Status::OK();
+  return OkStatus();
 }
 }  // namespace tensorflow

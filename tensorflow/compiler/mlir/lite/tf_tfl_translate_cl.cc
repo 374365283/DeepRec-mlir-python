@@ -24,14 +24,14 @@ opt<std::string> input_file_name(llvm::cl::Positional,
                                  llvm::cl::init("-"));
 
 // NOLINTNEXTLINE
-opt<bool> import_saved_model(
-    "savedmodel-to-mlir",
+opt<bool> import_saved_model_object_graph(
+    "savedmodel-objectgraph-to-mlir",
     llvm::cl::desc("Import a saved model to its MLIR representation"),
     llvm::cl::value_desc("dir"));
 
 // NOLINTNEXTLINE
-opt<bool> import_saved_model_v1(
-    "savedmodel-v1-to-mlir",
+opt<bool> import_saved_model_signature_defs(
+    "savedmodel-signaturedefs-to-mlir",
     llvm::cl::desc("Import a saved model V1 to its MLIR representation"),
     llvm::cl::value_desc("dir"));
 
@@ -71,6 +71,12 @@ opt<bool> output_mlir(
     llvm::cl::desc(
         "Output MLIR rather than FlatBuffer for the generated TFLite model"),
     llvm::cl::init(false));
+// NOLINTNEXTLINE
+opt<bool> allow_all_select_tf_ops(
+    "allow-all-select-tf-ops",
+    llvm::cl::desc("Allow automatic pass through of TF ops (outside the flex "
+                   "allowlist) as select Tensorflow ops"),
+    llvm::cl::init(false));
 
 // The following approach allows injecting opdefs in addition
 // to those that are already part of the global TF registry  to be linked in
@@ -104,15 +110,75 @@ opt<std::string> quant_stats_file_name("quant-stats",
                                        llvm::cl::value_desc("filename"),
                                        llvm::cl::init(""));
 
+// A list of comma separated TF operators which are created by the user.
+// This must be used with `-emit-select-tf-ops=true`.
 // NOLINTNEXTLINE
-opt<bool> inline_functions(
-    "inline",
-    llvm::cl::desc("Inline function calls within the main function "
-                   "before legalization to TFLite."),
+opt<std::string> select_user_tf_ops(
+    "select-user-tf-ops",
+    llvm::cl::desc(
+        "<list of custom tf ops created by the user (comma separated)>"),
+    llvm::cl::init(""));
+
+// NOLINTNEXTLINE
+opt<bool> unfold_batchmatmul(
+    "unfold_batchmatmul",
+    llvm::cl::desc(
+        "Whether to unfold TF BatchMatMul to a set of TFL FullyConnected ops."),
     llvm::cl::init(true));
 
 // NOLINTNEXTLINE
-opt<bool> legalize_while(
-    "legalize-tf-while",
-    llvm::cl::desc("Whether to legalize TF While to TFL While."),
+opt<bool> unfold_large_splat_constant(
+    "unfold-large-splat-constant",
+    llvm::cl::desc("Whether to unfold large splat constant tensors to reduce "
+                   "the generated model size."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> guarantee_all_funcs_one_use(
+    "guarantee-all-funcs-one-use",
+    llvm::cl::desc(
+        "Whether to clone functions to ensure each function has a single use."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> enable_dynamic_update_slice(
+    "enable-dynamic-update-slice",
+    llvm::cl::desc("Whether to enable dynamic update slice op to convert "
+                   "TensorListSetItem op."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> import_hlo("import-hlo",
+                     llvm::cl::desc("Whether the input file is hlo file."),
+                     llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<HloImportType> hlo_import_type(
+    "hlo-import-type", llvm::cl::desc("The file type of the hlo."),
+    llvm::cl::values(clEnumVal(proto, "Import hlo in proto binary format"),
+                     clEnumVal(hlotxt, "Import hlo in hlotxt format"),
+                     clEnumVal(mlir_text, "Import hlo in mlir_text format")));
+
+// NOLINTNEXTLINE
+opt<bool> enable_hlo_to_tf_conversion(
+    "enable-hlo-to-tf-conversion",
+    llvm::cl::desc("Whether to enable the hlo to tf ops conversion."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> preserve_assert_op(
+    "preserve-assert-op",
+    llvm::cl::desc("Preserve AssertOp during tfl legalization."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> enable_stablehlo_conversion(
+    "enable-stablehlo-conversion",
+    llvm::cl::desc("Enable converting TF to Stablehlo."),
+    llvm::cl::init(false));
+
+// NOLINTNEXTLINE
+opt<bool> post_training_quantization(
+    "post-training-quantization",
+    llvm::cl::desc("Enable post_training_quantization."),
     llvm::cl::init(false));

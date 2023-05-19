@@ -21,8 +21,9 @@ limitations under the License.
 #include "llvm/IR/IntrinsicsAMDGPU.h"
 #include "llvm/IR/IntrinsicsNVPTX.h"
 #include "llvm/IR/MDBuilder.h"
+#include "tensorflow/compiler/xla/service/llvm_ir/llvm_type_conversion_util.h"
 #include "tensorflow/compiler/xla/service/llvm_ir/llvm_util.h"
-#include "tensorflow/core/platform/logging.h"
+#include "tensorflow/tsl/platform/logging.h"
 
 namespace xla {
 namespace gpu {
@@ -36,8 +37,8 @@ using absl::StrCat;
 // those device functions.
 struct TargetIntrinsics {
   llvm::Intrinsic::ID nvptx_intrinsic;
-  absl::variant<llvm::Intrinsic::ID,
-                std::function<llvm::CallInst*(llvm::IRBuilder<>*)>>
+  std::variant<llvm::Intrinsic::ID,
+               std::function<llvm::CallInst*(llvm::IRBuilder<>*)>>
       amdgpu_intrinsic_or_function;
 };
 
@@ -97,13 +98,17 @@ struct TargetIntrinsics GetIntrinsic(TargetIntrinsicID intrin) {
                                               b_);
               }};
     }
+    case TargetIntrinsicID::kGroupBarrierId: {
+      return {llvm::Intrinsic::nvvm_bar_warp_sync,
+              llvm::Intrinsic::amdgcn_wave_barrier};
+    }
   }
 }
 
 // Wrapper structure for carrying math functions for NVPTX/AMDGPU platforms.
 struct TargetDeviceFunction {
-  const string nvptx_root;
-  const string amdgpu_root;
+  const std::string nvptx_root;
+  const std::string amdgpu_root;
 };
 
 // Gets the device function name on different platforms (NVPTX, AMDGPU)
@@ -111,23 +116,14 @@ struct TargetDeviceFunction {
 struct TargetDeviceFunction GetDeviceFunctionRoot(
     TargetDeviceFunctionID func_id) {
   switch (func_id) {
-    case TargetDeviceFunctionID::kPow: {
-      return {"__nv_pow", "__ocml_pow"};
-    }
-    case TargetDeviceFunctionID::kErfcinv: {
-      return {"__nv_erfcinv", "__ocml_erfcinv"};
-    }
-    case TargetDeviceFunctionID::kLog: {
-      return {"__nv_log", "__ocml_log"};
-    }
-    case TargetDeviceFunctionID::kLog1p: {
-      return {"__nv_log1p", "__ocml_log1p"};
-    }
-    case TargetDeviceFunctionID::kSin: {
-      return {"__nv_sin", "__ocml_sin"};
+    case TargetDeviceFunctionID::kAtan2: {
+      return {"__nv_atan2", "__ocml_atan2"};
     }
     case TargetDeviceFunctionID::kCos: {
       return {"__nv_cos", "__ocml_cos"};
+    }
+    case TargetDeviceFunctionID::kErfcinv: {
+      return {"__nv_erfcinv", "__ocml_erfcinv"};
     }
     case TargetDeviceFunctionID::kExp: {
       return {"__nv_exp", "__ocml_exp"};
@@ -135,31 +131,43 @@ struct TargetDeviceFunction GetDeviceFunctionRoot(
     case TargetDeviceFunctionID::kExpm1: {
       return {"__nv_expm1", "__ocml_expm1"};
     }
-    case TargetDeviceFunctionID::kSqrt: {
-      return {"__nv_sqrt", "__ocml_sqrt"};
-    }
-    case TargetDeviceFunctionID::kRsqrt: {
-      return {"__nv_rsqrt", "__ocml_rsqrt"};
-    }
-    case TargetDeviceFunctionID::kAtan2: {
-      return {"__nv_atan2", "__ocml_atan2"};
-    }
     case TargetDeviceFunctionID::kFmod: {
       return {"__nv_fmod", "__ocml_fmod"};
+    }
+    case TargetDeviceFunctionID::kHypot: {
+      return {"__nv_hypot", "__ocml_hypot"};
+    }
+    case TargetDeviceFunctionID::kLog: {
+      return {"__nv_log", "__ocml_log"};
+    }
+    case TargetDeviceFunctionID::kLog1p: {
+      return {"__nv_log1p", "__ocml_log1p"};
+    }
+    case TargetDeviceFunctionID::kPow: {
+      return {"__nv_pow", "__ocml_pow"};
     }
     case TargetDeviceFunctionID::kRound: {
       return {"__nv_round", "__ocml_round"};
     }
-    case TargetDeviceFunctionID::kHypot: {
-      return {"__nv_hypot", "__ocml_hypot"};
+    case TargetDeviceFunctionID::kRsqrt: {
+      return {"__nv_rsqrt", "__ocml_rsqrt"};
+    }
+    case TargetDeviceFunctionID::kSin: {
+      return {"__nv_sin", "__ocml_sin"};
+    }
+    case TargetDeviceFunctionID::kSqrt: {
+      return {"__nv_sqrt", "__ocml_sqrt"};
+    }
+    case TargetDeviceFunctionID::kTanh: {
+      return {"__nv_tanh", "__ocml_tanh"};
     }
   }
 }
 }  // namespace
 
-string ObtainDeviceFunctionName(TargetDeviceFunctionID func_id,
-                                PrimitiveType output_type,
-                                llvm::IRBuilder<>* b) {
+std::string ObtainDeviceFunctionName(TargetDeviceFunctionID func_id,
+                                     PrimitiveType output_type,
+                                     llvm::IRBuilder<>* b) {
   // The device math functions differentiate between "double" and "float" by
   // appending a double or float specific suffix to a root name. The suffix and
   // the root name are specific to the target.
@@ -188,7 +196,7 @@ string ObtainDeviceFunctionName(TargetDeviceFunctionID func_id,
 }
 
 llvm::CallInst* EmitDeviceFunctionCall(
-    const string& callee_name, absl::Span<llvm::Value* const> operands,
+    const std::string& callee_name, absl::Span<llvm::Value* const> operands,
     absl::Span<const PrimitiveType> input_types, PrimitiveType output_type,
     absl::Span<const llvm::Attribute::AttrKind> attributes,
     llvm::IRBuilder<>* b, absl::string_view name) {
@@ -228,13 +236,13 @@ llvm::CallInst* EmitCallToTargetIntrinsic(
     llvm_intrinsic_id = gpu_intrinsic_id.nvptx_intrinsic;
   } else if (target_triple.getArch() == llvm::Triple::amdgcn) {
     llvm::Intrinsic::ID* llvm_intrinsic_id_ptr =
-        absl::get_if<llvm::Intrinsic::ID>(
+        std::get_if<llvm::Intrinsic::ID>(
             &gpu_intrinsic_id.amdgpu_intrinsic_or_function);
     if (llvm_intrinsic_id_ptr) {
       llvm_intrinsic_id = *llvm_intrinsic_id_ptr;
     } else {
       std::function<llvm::CallInst*(llvm::IRBuilder<>*)>* builder_func =
-          absl::get_if<std::function<llvm::CallInst*(llvm::IRBuilder<>*)>>(
+          std::get_if<std::function<llvm::CallInst*(llvm::IRBuilder<>*)>>(
               &gpu_intrinsic_id.amdgpu_intrinsic_or_function);
       return (*builder_func)(b);
     }

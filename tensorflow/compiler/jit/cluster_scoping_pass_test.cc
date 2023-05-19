@@ -17,12 +17,13 @@ limitations under the License.
 
 #include "absl/container/flat_hash_map.h"
 #include "tensorflow/compiler/jit/defs.h"
+#include "tensorflow/compiler/jit/test_util.h"
+#include "tensorflow/core/common_runtime/graph_constructor.h"
+#include "tensorflow/core/common_runtime/graph_def_builder_util.h"
 #include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/graph/algorithm.h"
-#include "tensorflow/core/graph/graph_constructor.h"
 #include "tensorflow/core/graph/graph_def_builder.h"
-#include "tensorflow/core/graph/graph_def_builder_util.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/public/session_options.h"
@@ -33,17 +34,12 @@ namespace {
 Status ClusterScoping(std::unique_ptr<Graph>* graph) {
   FixupSourceAndSinkEdges(graph->get());
 
-  GraphOptimizationPassOptions opt_options;
-  opt_options.graph = graph;
-  FunctionDefLibrary fdef_lib;
-  FunctionLibraryDefinition flib_def(OpRegistry::Global(), fdef_lib);
-  opt_options.flib_def = &flib_def;
-  SessionOptions session_options;
-  session_options.env = Env::Default();
-  session_options.config.mutable_graph_options()
+  GraphOptimizationPassWrapper wrapper;
+  wrapper.session_options.config.mutable_graph_options()
       ->mutable_optimizer_options()
       ->set_global_jit_level(OptimizerOptions::ON_2);
-  opt_options.session_options = &session_options;
+  GraphOptimizationPassOptions opt_options =
+      wrapper.CreateGraphOptimizationPassOptions(graph);
 
   ClusterScopingPass pass;
   return pass.Run(opt_options);
@@ -69,7 +65,7 @@ absl::flat_hash_map<string, string> GetXlaInternalScopes(const Graph& graph) {
 
 Node* BuildStageNode(GraphDefBuilder& builder, string name,
                      std::initializer_list<DataType> dtypes,
-                     gtl::ArraySlice<ops::NodeOut> values) {
+                     absl::Span<const ops::NodeOut> values) {
   auto opts = builder.opts()
                   .WithName(std::move(name))
                   .WithAttr("dtypes", std::move(dtypes));
@@ -154,17 +150,18 @@ TEST(XlaCompilationTest, StagePipelinePreservedAndInitialScopesRespected) {
 
     // Intentionally give add0 and add1 the same initial scope but they should
     // be separated by the ClusterScopingPass.
-    Node* add0 =
-        ops::BinaryOp("Add", a, b, builder.opts().WithName("add0").WithAttr(
-                                       kXlaInternalScopeAttr, "ClusterA"));
+    Node* add0 = ops::BinaryOp("Add", a, b,
+                               builder.opts().WithName("add0").WithAttr(
+                                   kXlaInternalScopeAttr, "ClusterA"));
     Node* add1 = ops::BinaryOp("Add", unstage, b,
                                builder.opts().WithName("add1").WithAttr(
                                    kXlaInternalScopeAttr, "ClusterA"));
-    Node* relu0 =
-        ops::UnaryOp("Relu", add0, builder.opts().WithName("relu0").WithAttr(
-                                       kXlaInternalScopeAttr, "ClusterB"));
-    ops::UnaryOp("Relu", add1, builder.opts().WithName("relu1").WithAttr(
-                                   kXlaInternalScopeAttr, "ClusterD"));
+    Node* relu0 = ops::UnaryOp("Relu", add0,
+                               builder.opts().WithName("relu0").WithAttr(
+                                   kXlaInternalScopeAttr, "ClusterB"));
+    ops::UnaryOp("Relu", add1,
+                 builder.opts().WithName("relu1").WithAttr(
+                     kXlaInternalScopeAttr, "ClusterD"));
     BuildStageNode(builder, "stage", {DT_FLOAT}, {relu0});
 
     TF_EXPECT_OK(GraphDefBuilderToGraph(builder, graph.get()));

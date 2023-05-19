@@ -1,14 +1,14 @@
-// RUN: flatbuffer_translate -mlir-to-tflite-flatbuffer %s -o - | flatbuffer_to_string - | FileCheck --dump-input-on-failure %s
+// RUN: flatbuffer_translate -mlir-to-tflite-flatbuffer %s -o - | flatbuffer_to_string - | FileCheck %s
 
 module attributes {
   tfl.metadata = {key1 = "value1", key2 = "value2"}
 } {
-  func @main(tensor<3x2xi32>) -> tensor<3x2xi32>
+  func.func @main(tensor<3x2xi32>) -> tensor<3x2xi32>
     attributes {tf.entry_function = {inputs = "input", outputs = "SameNameAsOutput"}} {
   ^bb0(%arg0: tensor<3x2xi32>):
     %0 = "tfl.pseudo_const" () {value = dense<[[1, 2], [3, 4], [5, 6]]> : tensor<3x2xi32>} : () -> tensor<3x2xi32>
     %1 = "tfl.sub" (%arg0, %0) {fused_activation_function = "NONE"} : (tensor<3x2xi32>, tensor<3x2xi32>) -> tensor<3x2xi32>
-    return %1 : tensor<3x2xi32>
+    func.return %1 : tensor<3x2xi32>
   }
 }
 
@@ -33,4 +33,5 @@ module attributes {
 // CHECK-NEXT:   name: "min_runtime_version",
 // CHECK-NEXT:   buffer: 6
 // CHECK-NEXT: } ]
+// CHECK-NEXT: signature_defs: [ ]
 // CHECK-NEXT: }

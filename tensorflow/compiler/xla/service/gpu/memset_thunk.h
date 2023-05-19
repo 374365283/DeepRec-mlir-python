@@ -17,11 +17,10 @@ limitations under the License.
 #define TENSORFLOW_COMPILER_XLA_SERVICE_GPU_MEMSET_THUNK_H_
 
 #include "tensorflow/compiler/xla/service/buffer_assignment.h"
-#include "tensorflow/compiler/xla/service/gpu/hlo_execution_profiler.h"
 #include "tensorflow/compiler/xla/service/gpu/thunk.h"
 #include "tensorflow/compiler/xla/service/hlo_instruction.h"
 #include "tensorflow/compiler/xla/status.h"
-#include "tensorflow/stream_executor/stream_executor.h"
+#include "tensorflow/compiler/xla/stream_executor/stream_executor.h"
 
 // This file contains thunks that set a buffer's elements to a particular value.
 // This can be faster than emitting a kernel to set the elements.
@@ -32,30 +31,55 @@ namespace gpu {
 // Thunk that zeroes out a given chunk of memory.
 class MemzeroThunk : public Thunk {
  public:
-  explicit MemzeroThunk(const BufferAllocation::Slice& dest,
-                        const HloInstruction* hlo)
-      : Thunk(Kind::kMemzero, hlo), dest_(dest) {}
+  explicit MemzeroThunk(ThunkInfo thunk_info,
+                        const BufferAllocation::Slice& dest,
+                        mlir::Value dest_value)
+      : Thunk(Kind::kMemzero, thunk_info),
+        dest_(dest),
+        dest_value_(dest_value) {}
 
   Status ExecuteOnStream(const ExecuteParams& params) override;
 
+  void ClearCompileTimeInfo() override {
+    Thunk::ClearCompileTimeInfo();
+    dest_value_ = nullptr;
+  }
+
+  const BufferAllocation::Slice& destination() const { return dest_; }
+  mlir::Value dest_value() const { return dest_value_; }
+
  private:
   const BufferAllocation::Slice dest_;
+  mlir::Value dest_value_;
 };
 
 // Thunk that sets a given chunk of memory to a particular 32-bit value.  The
 // destination chunk must have size divisible by 32 bits.
 class Memset32BitValueThunk : public Thunk {
  public:
-  explicit Memset32BitValueThunk(uint32 value,
+  explicit Memset32BitValueThunk(ThunkInfo thunk_info, uint32_t value,
                                  const BufferAllocation::Slice& dest,
-                                 const HloInstruction* hlo)
-      : Thunk(Kind::kMemset32BitValue, hlo), value_(value), dest_(dest) {}
+                                 mlir::Value dest_value)
+      : Thunk(Kind::kMemset32BitValue, thunk_info),
+        value_(value),
+        dest_(dest),
+        dest_value_(dest_value) {}
 
   Status ExecuteOnStream(const ExecuteParams& params) override;
 
+  void ClearCompileTimeInfo() override {
+    Thunk::ClearCompileTimeInfo();
+    dest_value_ = nullptr;
+  }
+
+  const BufferAllocation::Slice& destination() const { return dest_; }
+  uint32_t value() const { return value_; }
+  mlir::Value dest_value() const { return dest_value_; }
+
  private:
-  uint32 value_;
+  const uint32_t value_;
   const BufferAllocation::Slice dest_;
+  mlir::Value dest_value_;
 };
 
 }  // namespace gpu

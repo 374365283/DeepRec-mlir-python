@@ -24,7 +24,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/gpu/gpu_fusible.h"
 #include "tensorflow/compiler/xla/service/gpu/ir_emission_utils.h"
 #include "tensorflow/compiler/xla/service/hlo_creation_utils.h"
-#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/tsl/platform/errors.h"
 
 namespace xla {
 namespace gpu {
@@ -41,25 +41,6 @@ Shape GetInputShapeForMultiOutputFusion(const HloInstruction& instr) {
     return Shape();
   } else {
     return real_hero->operand(0)->shape();
-  }
-}
-
-// Creates a kInput fusion instruction and fuses `fused` into the created
-// fusion instruction.
-HloInstruction* MakeInputFusionInstruction(HloInstruction* fused) {
-  HloComputation* comp = fused->parent();
-  HloInstruction* fusion_instruction =
-      comp->AddInstruction(HloInstruction::CreateFusion(
-          fused->shape(), HloInstruction::FusionKind::kInput, fused));
-  TF_CHECK_OK(comp->ReplaceInstruction(fused, fusion_instruction));
-  return fusion_instruction;
-}
-
-size_t GetInstrCountOfFusible(const HloInstruction& instr) {
-  if (instr.opcode() != HloOpcode::kFusion) {
-    return 1;
-  } else {
-    return instr.fused_instruction_count();
   }
 }
 
@@ -97,7 +78,7 @@ std::vector<HloInstruction*> FindAndSortFusionCandidates(
     HloInstruction* consumer) {
   absl::flat_hash_set<HloInstruction*> fusion_instr_set;
   std::vector<HloInstruction*> fusion_instrs;
-  for (auto opnd : consumer->operands()) {
+  for (HloInstruction* opnd : consumer->operands()) {
     HloInstruction* predecessor = opnd->LatestNonGteAncestor();
     // Find out the input fusion instructions whose only consumer is `consumer`.
     // This guarantees that fusing these candidates will never create cycles, as
@@ -134,8 +115,7 @@ StatusOr<bool> HorizontalInputFusionImpl::Run() {
   // Using def-to-use order is sound since we do not modify users.
   std::vector<HloInstruction*> def_to_use_order =
       computation_->MakeInstructionPostOrder();
-  for (size_t i = 0; i < def_to_use_order.size(); ++i) {
-    auto consumer = def_to_use_order[i];
+  for (HloInstruction* consumer : def_to_use_order) {
     auto candidates = FindAndSortFusionCandidates(consumer);
     if (candidates.size() <= 1) {
       continue;
@@ -144,7 +124,11 @@ StatusOr<bool> HorizontalInputFusionImpl::Run() {
     // Convert candidates into fusions if needed.
     for (size_t j = 0; j < candidates.size(); ++j) {
       if (candidates[j]->opcode() != HloOpcode::kFusion) {
-        candidates[j] = MakeInputFusionInstruction(candidates[j]);
+        TF_ASSIGN_OR_RETURN(
+            HloInstruction * fusion_instr,
+            MakeFusionInstruction(candidates[j],
+                                  HloInstruction::FusionKind::kInput));
+        candidates[j] = fusion_instr;
         changed = true;
       }
     }
@@ -154,7 +138,7 @@ StatusOr<bool> HorizontalInputFusionImpl::Run() {
       HloInstruction* fusion_anchor = candidates[fusion_anchor_id];
       HloInstruction* fused = candidates[j];
       if (ShapesCompatibleForMultiOutputFusion(*fusion_anchor, *fused) &&
-          !FusionWouldBeTooLarge(*fusion_anchor, *fused)) {
+          FusionFitsInBudget(*fusion_anchor, *fused)) {
         VLOG(3) << "Fuse " << fused->ToString() << " into "
                 << fusion_anchor->ToString();
         fusion_anchor->MergeFusionInstructionIntoMultiOutput(fused);
@@ -179,10 +163,13 @@ StatusOr<bool> GpuHorizontalInputFusion::RunOnComputation(
   return horizontal_fusion_impl.Run();
 }
 
-StatusOr<bool> GpuHorizontalInputFusion::Run(HloModule* module) {
+StatusOr<bool> GpuHorizontalInputFusion::Run(
+    HloModule* module,
+    const absl::flat_hash_set<absl::string_view>& execution_threads) {
   bool changed = false;
   VLOG(2) << "Run horizontal input fusion.";
-  for (auto* comp : module->MakeNonfusionComputations()) {
+  for (HloComputation* comp :
+       module->MakeNonfusionComputations(execution_threads)) {
     TF_ASSIGN_OR_RETURN(changed, RunOnComputation(comp));
   }
 

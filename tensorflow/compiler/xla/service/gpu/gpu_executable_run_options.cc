@@ -15,35 +15,29 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/service/gpu/gpu_executable_run_options.h"
 
+#include <map>
+#include <optional>
+
 #include "absl/algorithm/container.h"
-#include "absl/strings/str_join.h"
+#include "tensorflow/compiler/xla/status_macros.h"
 
 namespace xla {
-
-std::string GlobalDeviceIdsToString(absl::Span<GlobalDeviceId const> ids) {
-  std::vector<int64> values;
-  values.reserve(ids.size());
-  for (GlobalDeviceId id : ids) {
-    values.push_back(id.value());
-  }
-  return absl::StrJoin(values, ",");
-}
+namespace gpu {
 
 NcclCliqueKey::NcclCliqueKey(std::vector<GlobalDeviceId> devices)
-    : devices_(std::move(devices)) {
-  absl::c_sort(devices_);
-  CHECK(absl::c_adjacent_find(devices_) == devices_.end())
-      << "Duplicate devices are not allowed: "
-      << GlobalDeviceIdsToString(devices_);
+    : devices_(std::move(devices)) {}
+
+std::string NcclCliqueKey::ToString() const {
+  return GlobalDeviceIdsToString(devices_);
 }
 
 GpuExecutableRunOptions& GpuExecutableRunOptions::set_gpu_global_device_ids(
-    absl::optional<std::vector<GlobalDeviceId>> gpu_global_device_ids) {
+    std::optional<std::map<int, GlobalDeviceId>> gpu_global_device_ids) {
   gpu_global_device_ids_ = std::move(gpu_global_device_ids);
   return *this;
 }
 
-const absl::optional<std::vector<GlobalDeviceId>>&
+const std::optional<std::map<int, GlobalDeviceId>>&
 GpuExecutableRunOptions::gpu_global_device_ids() const {
   return gpu_global_device_ids_;
 }
@@ -59,4 +53,33 @@ const NcclUniqueIdCallback& GpuExecutableRunOptions::nccl_unique_id_callback()
   return nccl_unique_id_callback_;
 }
 
+NcclExecuteParams::NcclExecuteParams(
+    const ServiceExecutableRunOptions& run_options, se::Stream* stream)
+    : stream(stream),
+      run_id(run_options.run_options().run_id()),
+      device_assn(run_options.run_options().device_assignment()) {
+  const GpuExecutableRunOptions* gpu_options =
+      run_options.run_options().gpu_executable_run_options();
+  gpu_global_device_ids = gpu_options && gpu_options->gpu_global_device_ids()
+                              ? &*gpu_options->gpu_global_device_ids()
+                              : nullptr;
+  nccl_unique_id_callback =
+      gpu_options && gpu_options->nccl_unique_id_callback()
+          ? &gpu_options->nccl_unique_id_callback()
+          : nullptr;
+}
+
+StatusOr<GlobalDeviceId> NcclExecuteParams::GetGlobalDeviceId() const {
+  int64_t local_device_ordinal = stream->parent()->device_ordinal();
+  if (gpu_global_device_ids) {
+    auto it = gpu_global_device_ids->find(local_device_ordinal);
+    TF_RET_CHECK(it != gpu_global_device_ids->end()) << local_device_ordinal;
+    return it->second;
+  } else {
+    // No local -> global mapping was provided; assume the identity mapping.
+    return GlobalDeviceId(local_device_ordinal);
+  }
+}
+
+}  // namespace gpu
 }  // namespace xla

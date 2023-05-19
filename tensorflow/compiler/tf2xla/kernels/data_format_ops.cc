@@ -36,9 +36,10 @@ class DataFormatDimMapOp : public XlaOpKernel {
     string dst_format;
     OP_REQUIRES_OK(context, context->GetAttr("dst_format", &dst_format));
     OP_REQUIRES(context, src_format.size() == 4 or src_format.size() == 5,
-                errors::InvalidArgument(absl::StrCat(
-                    "Source format must of length 4 or 5, "
-                    "received src_format = ", src_format)));
+                errors::InvalidArgument(
+                    absl::StrCat("Source format must of length 4 or 5, "
+                                 "received src_format = ",
+                                 src_format)));
     OP_REQUIRES(
         context, dst_format.size() == 4 or dst_format.size() == 5,
         errors::InvalidArgument(absl::StrCat(
@@ -110,33 +111,62 @@ class DataFormatVecPermuteOp : public XlaOpKernel {
                 errors::InvalidArgument(
                     "Input must be a vector or matrix, but got shape ",
                     input_tensor_shape.DebugString()));
-    OP_REQUIRES(
-        ctx, input_tensor_shape.dim_size(0) == 4 ||
-                 input_tensor_shape.dim_size(0) == 5,
-        errors::InvalidArgument(
-            "First dimension of input must be of size 4 or 5, but got shape ",
-            input_tensor_shape.DebugString()));
-    if (input_rank == 2) {
+    const int dim0 = input_tensor_shape.dim_size(0);
+
+    const int full_dim_count = src_format_.size();
+    const int spatial_dim_count = full_dim_count - 2;
+
+    if (input_rank == 1) {
+      OP_REQUIRES(ctx,
+                  input_tensor_shape.num_elements() == spatial_dim_count ||
+                      input_tensor_shape.num_elements() == full_dim_count,
+                  errors::InvalidArgument("1D input must be of size ",
+                                          spatial_dim_count, " or ",
+                                          full_dim_count, ", but got shape ",
+                                          input_tensor_shape.DebugString()));
+    } else if (input_rank == 2) {
+      OP_REQUIRES(ctx,
+                  input_tensor_shape.dim_size(0) == spatial_dim_count ||
+                      input_tensor_shape.dim_size(0) == full_dim_count,
+                  errors::InvalidArgument("First dimension of 2D input must be "
+                                          "of size ",
+                                          spatial_dim_count, " or ",
+                                          full_dim_count, ", but got shape ",
+                                          input_tensor_shape.DebugString()));
       OP_REQUIRES(
           ctx, input_tensor_shape.dim_size(1) == 2,
           errors::InvalidArgument(
               "Second dimension of 2D input must be of size 2, but got shape ",
               input_tensor_shape.DebugString()));
     }
-    std::vector<int32> dst_indices(dst_format_.size(), -1);
-    for (int i = 0; i < src_format_.size(); ++i) {
-      for (int j = 0; j < dst_format_.size(); ++j) {
-        if (src_format_[i] == dst_format_[j]) {
+
+    string src_format_str = src_format_;
+    string dst_format_str = dst_format_;
+    if (input_tensor_shape.dim_size(0) == spatial_dim_count) {
+      // If the input is a vector of size spatial_dim_count, treat the elements
+      // as spatial dimensions.
+      auto keep_only_spatial_dimensions =
+          [spatial_dim_count](string* format_str) -> void {
+        auto new_end =
+            std::remove_if(format_str->begin(), format_str->end(),
+                           [spatial_dim_count](const char dim) {
+                             return dim != 'H' && dim != 'W' &&
+                                    (spatial_dim_count == 2 || dim != 'D');
+                           });
+        format_str->erase(new_end, format_str->end());
+      };
+      keep_only_spatial_dimensions(&src_format_str);
+      keep_only_spatial_dimensions(&dst_format_str);
+    }
+    std::vector<int32> dst_indices(dim0);
+    for (int i = 0; i < dim0; ++i) {
+      for (int j = 0; j < dim0; ++j) {
+        if (src_format_str[i] == dst_format_str[j]) {
           dst_indices[j] = i;
           break;
         }
       }
     }
-    absl::c_for_each(dst_indices, [&](int idx) -> void {
-      OP_REQUIRES(ctx, idx != -1,
-                  errors::InvalidArgument(absl::StrCat(
-                      src_format_, " is not a permutation of ", dst_format_)));
-    });
     xla::XlaOp indices =
         xla::ConstantR1(builder, absl::Span<const int32>(dst_indices));
     xla::XlaOp output = xla::TorchIndexSelect(ctx->Input(0), indices, 0);
@@ -153,11 +183,10 @@ class DataFormatVecPermuteOp : public XlaOpKernel {
 REGISTER_XLA_OP(
     Name("DataFormatVecPermute").TypeConstraint("T", {DT_INT32, DT_INT64}),
     DataFormatVecPermuteOp);
-REGISTER_XLA_OP(
-    Name("DataFormatVecPermute")
-        .Label("host")
-        .TypeConstraint("T", {DT_INT32, DT_INT64}),
-    DataFormatVecPermuteOp);
+REGISTER_XLA_OP(Name("DataFormatVecPermute")
+                    .Label("host")
+                    .TypeConstraint("T", {DT_INT32, DT_INT64}),
+                DataFormatVecPermuteOp);
 
 }  // namespace
 }  // namespace tensorflow

@@ -16,6 +16,7 @@ limitations under the License.
 #include "tensorflow/compiler/tf2xla/xla_compiled_cpu_function.h"
 
 #include <cassert>
+
 #include "tensorflow/compiler/xla/cpu_function_runtime.h"
 
 namespace tensorflow {
@@ -28,7 +29,9 @@ XlaCompiledCpuFunction::XlaCompiledCpuFunction(const StaticData& static_data,
       buffer_infos_(static_data.buffer_infos_),
       arg_index_table_(static_data.arg_index_table_),
       num_args_(static_data.num_args_),
+      num_variables_(static_data.num_variables_),
       arg_names_(static_data.arg_names_),
+      variable_names_(static_data.variable_names_),
       result_names_(static_data.result_names_),
       program_shape_(static_data.program_shape_),
       hlo_profile_printer_data_(static_data.hlo_profile_printer_data_) {
@@ -45,14 +48,15 @@ XlaCompiledCpuFunction::XlaCompiledCpuFunction(const StaticData& static_data,
   // signature, but it is ignored by the generated code and we pass in null for
   // it.
   if (hlo_profiling_enabled()) {
-    profile_counters_ = new int64[static_data.profile_counters_size_]();
+    profile_counters_ = new int64_t[static_data.profile_counters_size_]();
   }
 }
 
 bool XlaCompiledCpuFunction::Run() {
+  XlaCustomCallStatus status;
   raw_function_(buffer_table_[result_index_], &run_options_, nullptr,
-                buffer_table_, profile_counters_);
-  return true;
+                buffer_table_, &status, profile_counters_);
+  return !xla::CustomCallStatusGetMessage(&status).has_value();
 }
 
 XlaCompiledCpuFunction::~XlaCompiledCpuFunction() {
@@ -63,6 +67,8 @@ XlaCompiledCpuFunction::~XlaCompiledCpuFunction() {
 
 namespace {
 
+constexpr int kNotFound = -1;
+
 // Linear search through `names` looking for a match with `name`. Returns -1 if
 // the name isn't found, or is empty.
 //
@@ -72,7 +78,6 @@ int LookupNameIndex(const string& name, const char** names) {
   // for AOT try the setting the tfcompile --gen_name_to_index flag.
   assert(names != nullptr);
 
-  constexpr int kNotFound = -1;
   if (name.empty()) {
     return kNotFound;
   }
@@ -88,6 +93,14 @@ int LookupNameIndex(const string& name, const char** names) {
 
 int XlaCompiledCpuFunction::LookupArgIndex(const string& name) const {
   return LookupNameIndex(name, arg_names_);
+}
+
+int XlaCompiledCpuFunction::LookupVariableIndex(const string& name) const {
+  int index = LookupNameIndex(name, variable_names_);
+  if (index == kNotFound) {
+    return kNotFound;
+  }
+  return num_args_ - num_variables_ + index;
 }
 
 int XlaCompiledCpuFunction::LookupResultIndex(const string& name) const {

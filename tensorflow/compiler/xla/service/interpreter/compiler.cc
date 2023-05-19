@@ -15,31 +15,33 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/service/interpreter/compiler.h"
 
+#include <memory>
 #include <string>
 #include <utility>
 
-#include "absl/memory/memory.h"
 #include "tensorflow/compiler/xla/service/algebraic_simplifier.h"
+#include "tensorflow/compiler/xla/service/batchnorm_expander.h"
 #include "tensorflow/compiler/xla/service/cholesky_expander.h"
+#include "tensorflow/compiler/xla/service/comparison_expander.h"
 #include "tensorflow/compiler/xla/service/computation_placer.h"
 #include "tensorflow/compiler/xla/service/custom_call_target_registry.h"
 #include "tensorflow/compiler/xla/service/dynamic_index_splitter.h"
+#include "tensorflow/compiler/xla/service/eigh_expander.h"
 #include "tensorflow/compiler/xla/service/flatten_call_graph.h"
 #include "tensorflow/compiler/xla/service/hlo_constant_folding.h"
 #include "tensorflow/compiler/xla/service/hlo_cse.h"
 #include "tensorflow/compiler/xla/service/hlo_dce.h"
 #include "tensorflow/compiler/xla/service/hlo_pass_fix.h"
 #include "tensorflow/compiler/xla/service/hlo_pass_pipeline.h"
-#include "tensorflow/compiler/xla/service/hlo_subcomputation_unification.h"
 #include "tensorflow/compiler/xla/service/interpreter/executable.h"
 #include "tensorflow/compiler/xla/service/layout_assignment.h"
 #include "tensorflow/compiler/xla/service/map_inliner.h"
+#include "tensorflow/compiler/xla/service/qr_expander.h"
 #include "tensorflow/compiler/xla/service/reshape_mover.h"
 #include "tensorflow/compiler/xla/service/triangular_solve_expander.h"
 #include "tensorflow/compiler/xla/service/while_loop_simplifier.h"
 #include "tensorflow/compiler/xla/status_macros.h"
 #include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/platform/types.h"
 
 namespace xla {
 namespace interpreter {
@@ -81,17 +83,23 @@ Status InterpreterCompiler::RunHloOptimization(HloModule* hlo_module) {
 
   pipeline.AddPass<DynamicIndexSplitter>();
   pipeline.AddPass<CholeskyExpander>();
+  pipeline.AddPass<QrExpander>();
+  pipeline.AddPass<EighExpander>();
+  pipeline.AddPass<ComparisonExpander>();
   pipeline.AddPass<TriangularSolveExpander>();
+  pipeline.AddPass<BatchNormExpander>(
+      /*rewrite_training_op=*/true,
+      /*rewrite_inference_op=*/true,
+      /*rewrite_grad_op=*/true);
   pipeline.AddPass<LayoutAssignment>(
-      hlo_module->mutable_entry_computation_layout(),
-      LayoutAssignment::InstructionCanChangeLayout);
+      hlo_module->mutable_entry_computation_layout());
 
   return pipeline.Run(hlo_module).status();
 }
 
 StatusOr<std::unique_ptr<HloModule>> InterpreterCompiler::RunHloPasses(
     std::unique_ptr<HloModule> hlo_module, se::StreamExecutor* /*stream_exec*/,
-    se::DeviceMemoryAllocator* /*device_allocator*/) {
+    const CompileOptions& /*options*/) {
   VLOG(1) << "Run hlo passes on graph " << hlo_module->name();
   TF_RETURN_IF_ERROR(RunHloOptimization(hlo_module.get()));
   return std::move(hlo_module);
@@ -99,7 +107,7 @@ StatusOr<std::unique_ptr<HloModule>> InterpreterCompiler::RunHloPasses(
 
 StatusOr<std::unique_ptr<Executable>> InterpreterCompiler::RunBackend(
     std::unique_ptr<HloModule> hlo_module, se::StreamExecutor* stream_exec,
-    se::DeviceMemoryAllocator* /*device_allocator*/) {
+    const CompileOptions& /*options*/) {
   TF_RET_CHECK(stream_exec != nullptr);
 
   VLOG(1) << "Run backend " << hlo_module->name();
@@ -107,14 +115,14 @@ StatusOr<std::unique_ptr<Executable>> InterpreterCompiler::RunBackend(
   TF_ASSIGN_OR_RETURN(DynamicDimensionInference dynamic_dimension_inference,
                       DynamicDimensionInference::Run(hlo_module.get()));
 
-  auto evaluator = absl::make_unique<HloEvaluator>();
+  auto evaluator = std::make_unique<HloEvaluator>();
   evaluator->set_use_fast_path(
       hlo_module->config().debug_options().xla_hlo_evaluator_use_fast_path());
   evaluator->set_custom_call_handler(HandleEvaluatorCustomCall);
 
   // Create executable from only the Hlo module.
   std::unique_ptr<Executable> executable =
-      absl::make_unique<InterpreterExecutable>(
+      std::make_unique<InterpreterExecutable>(
           std::move(hlo_module), std::move(evaluator),
           std::move(dynamic_dimension_inference));
 
@@ -124,25 +132,22 @@ StatusOr<std::unique_ptr<Executable>> InterpreterCompiler::RunBackend(
 StatusOr<std::vector<std::unique_ptr<Executable>>> InterpreterCompiler::Compile(
     std::unique_ptr<HloModuleGroup> module_group,
     std::vector<std::vector<se::StreamExecutor*>> stream_exec,
-    se::DeviceMemoryAllocator* device_allocator) {
+    const CompileOptions& options) {
   if (module_group->empty()) {
     return std::vector<std::unique_ptr<Executable>>();
   }
   if (module_group->size() > 1) {
-    return tensorflow::errors::Unimplemented(
+    return tsl::errors::Unimplemented(
         "Compilation of multiple HLO modules is not supported on Interpreter.");
   }
   if (stream_exec.size() != 1 || stream_exec[0].size() != 1) {
-    return tensorflow::errors::Unimplemented(
-        "Unexpected number of StreamExecutor's.");
+    return tsl::errors::Unimplemented("Unexpected number of StreamExecutor's.");
   }
   auto hlo_modules = module_group->ConsumeModules();
-  TF_ASSIGN_OR_RETURN(auto module,
-                      RunHloPasses(std::move(hlo_modules[0]), stream_exec[0][0],
-                                   device_allocator));
-  TF_ASSIGN_OR_RETURN(
-      auto executable,
-      RunBackend(std::move(module), stream_exec[0][0], device_allocator));
+  TF_ASSIGN_OR_RETURN(auto module, RunHloPasses(std::move(hlo_modules[0]),
+                                                stream_exec[0][0], options));
+  TF_ASSIGN_OR_RETURN(auto executable, RunBackend(std::move(module),
+                                                  stream_exec[0][0], options));
   std::vector<std::unique_ptr<Executable>> ret;
   ret.push_back(std::move(executable));
   return std::move(ret);
@@ -152,7 +157,7 @@ StatusOr<std::vector<std::unique_ptr<AotCompilationResult>>>
 InterpreterCompiler::CompileAheadOfTime(
     std::unique_ptr<HloModuleGroup> module_group,
     const AotCompilationOptions& aot_options) {
-  return tensorflow::errors::InvalidArgument(
+  return tsl::errors::InvalidArgument(
       "AOT compilation not supported on Interpreter");
 }
 
@@ -168,11 +173,11 @@ HloCostAnalysis::ShapeSizeFunction InterpreterCompiler::ShapeSizeBytesFunction()
 static bool InitModule() {
   xla::Compiler::RegisterCompilerFactory(
       se::interpreter::kXlaInterpreterPlatformId, []() {
-        return absl::make_unique<xla::interpreter::InterpreterCompiler>();
+        return std::make_unique<xla::interpreter::InterpreterCompiler>();
       });
   xla::ComputationPlacer::RegisterComputationPlacer(
       se::interpreter::kXlaInterpreterPlatformId,
-      []() { return absl::make_unique<xla::ComputationPlacer>(); });
+      []() { return std::make_unique<xla::ComputationPlacer>(); });
   return true;
 }
 

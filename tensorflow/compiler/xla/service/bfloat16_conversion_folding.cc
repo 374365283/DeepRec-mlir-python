@@ -18,12 +18,12 @@ limitations under the License.
 #include "absl/types/span.h"
 #include "tensorflow/compiler/xla/service/dfs_hlo_visitor_with_default.h"
 #include "tensorflow/compiler/xla/service/hlo_computation.h"
+#include "tensorflow/compiler/xla/service/hlo_dataflow_analysis.h"
 #include "tensorflow/compiler/xla/service/hlo_instruction.h"
 #include "tensorflow/compiler/xla/service/hlo_opcode.h"
 #include "tensorflow/compiler/xla/status_macros.h"
 #include "tensorflow/compiler/xla/xla_data.pb.h"
-#include "tensorflow/core/platform/logging.h"
-#include "tensorflow/core/platform/types.h"
+#include "tensorflow/tsl/platform/logging.h"
 
 namespace xla {
 
@@ -62,8 +62,8 @@ class BFloat16ConversionFoldingVisitor : public DfsHloVisitorWithDefault {
 
   // Folds the BF16 -> F32 conversion operand to the HLO.
   //
-  // Precondition: the operand is a F32 -> BF16 conversion.
-  Status FoldOperandConversion(HloInstruction* hlo, int64 operand_index);
+  // Precondition: the operand is a BF16 -> F32 conversion.
+  Status FoldOperandConversion(HloInstruction* hlo, int64_t operand_index);
 
   HloComputation* computation_;
   const BFloat16Support* bfloat16_support_;
@@ -81,18 +81,18 @@ Status BFloat16ConversionFoldingVisitor::FoldOutputConversions(
     TF_RETURN_IF_ERROR(user->ReplaceAllUsesWith(hlo));
     changed_ = true;
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status BFloat16ConversionFoldingVisitor::FoldOperandConversion(
-    HloInstruction* hlo, int64 operand_index) {
+    HloInstruction* hlo, int64_t operand_index) {
   // The operand is a convert from BF16 to F32.
   auto operand = hlo->mutable_operand(operand_index);
   CHECK_EQ(operand->opcode(), HloOpcode::kConvert);
   TF_RETURN_IF_ERROR(
       hlo->ReplaceOperandWith(operand_index, operand->mutable_operand(0)));
   changed_ = true;
-  return Status::OK();
+  return OkStatus();
 }
 
 namespace {
@@ -116,9 +116,9 @@ bool AllUsersAreF32ToBF16Converts(const HloInstruction* hlo) {
 
 Status BFloat16ConversionFoldingVisitor::TryFoldBF16Conversions(
     HloInstruction* hlo) {
-  std::vector<int64> bf16_to_f32_operands;
+  std::vector<int64_t> bf16_to_f32_operands;
   bool has_other_f32_operands = false;
-  for (int64 i = 0; i < hlo->operands().size(); ++i) {
+  for (int64_t i = 0; i < hlo->operands().size(); ++i) {
     auto operand = hlo->operand(i);
     if (operand->shape().element_type() == F32) {
       if (operand->opcode() == HloOpcode::kConvert &&
@@ -143,7 +143,7 @@ Status BFloat16ConversionFoldingVisitor::TryFoldBF16Conversions(
         (!fold_output_conversion && hlo->shape().element_type() == F32)) {
       // Some of the operands/output will remain F32, but we cannot use mixed
       // precisions, so we cannot do anything here.
-      return Status::OK();
+      return OkStatus();
     }
   }
 
@@ -151,63 +151,64 @@ Status BFloat16ConversionFoldingVisitor::TryFoldBF16Conversions(
     TF_RETURN_IF_ERROR(FoldOutputConversions(hlo));
   }
 
-  for (int64 i : bf16_to_f32_operands) {
+  for (int64_t i : bf16_to_f32_operands) {
     TF_RETURN_IF_ERROR(FoldOperandConversion(hlo, i));
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status BFloat16ConversionFoldingVisitor::DefaultAction(HloInstruction* hlo) {
   // Do not fold BF16 conversions for instructions related to tuples, entry and
-  // exit of a computation, fusion, convert, side-effecting instructions and
-  // control flow.
-  if (hlo->opcode() == HloOpcode::kTuple ||            //
-      hlo->opcode() == HloOpcode::kGetTupleElement ||  //
-      hlo->opcode() == HloOpcode::kConstant ||         //
-      hlo->opcode() == HloOpcode::kParameter ||        //
-      hlo->opcode() == HloOpcode::kFusion ||           //
-      hlo->opcode() == HloOpcode::kBitcastConvert ||   //
-      hlo->opcode() == HloOpcode::kConvert ||          //
-      hlo->opcode() == HloOpcode::kCall ||             //
-      hlo->opcode() == HloOpcode::kCustomCall ||       //
-      hlo->opcode() == HloOpcode::kWhile ||            //
-      hlo->opcode() == HloOpcode::kConditional ||      //
+  // exit of a computation, fusion, convert, side-effecting instructions,
+  // in-place operations and control flow.
+  if (hlo->opcode() == HloOpcode::kTuple ||                      //
+      hlo->opcode() == HloOpcode::kGetTupleElement ||            //
+      hlo->opcode() == HloOpcode::kConstant ||                   //
+      hlo->opcode() == HloOpcode::kParameter ||                  //
+      hlo->opcode() == HloOpcode::kFusion ||                     //
+      hlo->opcode() == HloOpcode::kBitcastConvert ||             //
+      hlo->opcode() == HloOpcode::kConvert ||                    //
+      hlo->opcode() == HloOpcode::kCall ||                       //
+      hlo->opcode() == HloOpcode::kCustomCall ||                 //
+      hlo->opcode() == HloOpcode::kWhile ||                      //
+      hlo->opcode() == HloOpcode::kConditional ||                //
+      HloDataflowAnalysis::IsInPlaceOperation(hlo->opcode()) ||  //
       hlo->HasSideEffectNoRecurse()) {
-    return Status::OK();
+    return OkStatus();
   }
   if (hlo == computation_->root_instruction() &&
       !bfloat16_support_->SupportsMixedPrecisions(*hlo)) {
     // If hlo is the root instruction, we cannot change its output, so folding
     // can only happen when it supports mixed precision so that we can change
     // its operands.
-    return Status::OK();
+    return OkStatus();
   }
   return TryFoldBF16Conversions(hlo);
 }
 
 Status BFloat16ConversionFoldingVisitor::HandleAllReduce(HloInstruction* crs) {
-  if (crs->IsCrossModuleAllReduce()) {
-    // Cross-module all-reduce has side effect.
-    return Status::OK();
+  if (crs->HasSideEffectNoRecurse()) {
+    // Do not perform optimization on side-effected AllReduce.
+    return OkStatus();
   }
   // First use DefaultAction() to handle the operands. It can't handle
   // tuple-shaped output.
   TF_RETURN_IF_ERROR(DefaultAction(crs));
 
   if (!bfloat16_support_->SupportsMixedPrecisions(*crs)) {
-    return Status::OK();
+    return OkStatus();
   }
 
   // If the output is not a tuple, we don't need special handling.
   if (!crs->shape().IsTuple()) {
-    return Status::OK();
+    return OkStatus();
   }
 
   // If crs is the root instruction, we should keep its original output type.
   // The root instruction implicitly has a use from being the result of the
   // computation, and the code below does not take this use into account.
   if (crs == computation_->root_instruction()) {
-    return Status::OK();
+    return OkStatus();
   }
 
   // Then do per-tuple-element handling on the output.
@@ -215,15 +216,19 @@ Status BFloat16ConversionFoldingVisitor::HandleAllReduce(HloInstruction* crs) {
       crs->operand_count());
   for (auto user : crs->users()) {
     if (user->opcode() != HloOpcode::kGetTupleElement) {
-      return Status::OK();
+      return OkStatus();
     }
     per_tuple_element_gtes[user->tuple_index()].push_back(user);
   }
 
-  for (int64 i = 0; i < crs->operand_count(); ++i) {
+  for (int64_t i = 0; i < crs->operand_count(); ++i) {
     // Fold conversions only when all the get-tuple-elements' users are
     // conversions from F32 to BF16.
     auto all_gte_users_are_bf16_convert = [&per_tuple_element_gtes, i]() {
+      // If no uses then return false. (As no uses are bf16 converts).
+      if (per_tuple_element_gtes[i].empty()) {
+        return false;
+      }
       for (auto gte : per_tuple_element_gtes[i]) {
         if (!AllUsersAreF32ToBF16Converts(gte)) {
           return false;
@@ -244,14 +249,16 @@ Status BFloat16ConversionFoldingVisitor::HandleAllReduce(HloInstruction* crs) {
     }
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
-StatusOr<bool> BFloat16ConversionFolding::Run(HloModule* module) {
+StatusOr<bool> BFloat16ConversionFolding::Run(
+    HloModule* module,
+    const absl::flat_hash_set<absl::string_view>& execution_threads) {
   XLA_VLOG_LINES(
       2, "BFloat16ConversionFolding::Run(), before:\n" + module->ToString());
   bool changed = false;
-  for (auto* comp : module->MakeNonfusionComputations()) {
+  for (auto* comp : module->MakeNonfusionComputations(execution_threads)) {
     if (BFloat16ConversionFoldingVisitor::Run(comp, bfloat16_support_, this)) {
       changed = true;
     }

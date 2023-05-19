@@ -16,6 +16,8 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_XLA_SERVICE_DYNAMIC_PADDER_H_
 #define TENSORFLOW_COMPILER_XLA_SERVICE_DYNAMIC_PADDER_H_
 
+#include <functional>
+
 #include "tensorflow/compiler/xla/service/dynamic_dimension_inference.h"
 #include "tensorflow/compiler/xla/service/hlo_pass_interface.h"
 
@@ -36,21 +38,61 @@ namespace xla {
 // Dynamic_padder removes dynamic shapes from the entry computation, and inserts
 // custom calls (with dynamic shapes), which are lowered by specialized
 // emitters: PadToStatic and SliceToDynamic.
-class DynamicPadder : public HloModulePass {
- public:
+
+// Each instruction can have one of the three modes in supporting dynamic
+// lowering.
+enum OpDynamismSupport {
+  // There is no support for dynamic lowering -- dynamic padder will make sure
+  // the input to that op has static bound by rewriting the op (e.g, extra space
+  // in reduce_sum will be padded with 0).
+  kNoSupport = 0,
+  // The op can take either dynamic input or static input.
+  kOptional,
+  // The op only has a dynamic lowering, dynamic padder will make sure the input
+  // to this op is in dynamic form.
+  kRequired,
+};
+
+struct DynamicPadderOptions {
+  // Returns true if given instruction supports native dynamic lowering. If
+  // so, dynamic padder will not attempt to pad it.
+  using OpSupportsDynamismHandler =
+      std::function<OpDynamismSupport(HloInstruction*)>;
+
+  OpSupportsDynamismHandler op_supports_dynamism_handler = nullptr;
+
+  // Instruct how to inference output dynamic dimensions of custom calls.
+  DynamicDimensionInference::CustomCallInferenceHandler custom_call_handler =
+      nullptr;
+
   // If `slice_dynamic_output` is true, insert 'slice_to_dynamic' ops to all
   // outputs that are inferred to be dynamic.
-  explicit DynamicPadder(bool slice_dynamic_output = true)
-      : slice_dynamic_output_(slice_dynamic_output) {}
+  bool slice_dynamic_output = true;
+
+  // Assertion generator for shape checks, only used if shape check mode is
+  // "runtime".
+  DynamicDimensionInference::AssertionGenerator assertion_generator;
+
+  // If set to true, pessimisticly assumes runtime shape checks may fail and
+  // returns a compile-time error.
+  DynamicDimensionInference::ShapeCheckMode shape_check_mode =
+      DynamicDimensionInference::ShapeCheckMode::kIgnore;
+};
+
+class DynamicPadder : public HloModulePass {
+ public:
+  explicit DynamicPadder(DynamicPadderOptions options = DynamicPadderOptions())
+      : options_(options) {}
 
   absl::string_view name() const override { return "dynamic_padder"; }
 
-  StatusOr<bool> Run(HloModule* module) override;
+  using HloPassInterface::Run;
+  StatusOr<bool> Run(
+      HloModule* module,
+      const absl::flat_hash_set<absl::string_view>& execution_threads) override;
 
  private:
-  // Insert 'slice_to_dynamic' ops to all outputs that are inferred to be
-  // dynamic.
-  bool slice_dynamic_output_;
+  DynamicPadderOptions options_;
 };
 
 }  // namespace xla

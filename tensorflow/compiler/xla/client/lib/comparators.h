@@ -42,6 +42,16 @@ XlaComputation CreateScalarLtComputation(
 XlaComputation CreateScalarGtComputation(
     const std::vector<PrimitiveType>& operand_types, XlaBuilder* builder);
 
+// Creates a scalar comparison computation and returns it. This function takes
+// a vector of comparator functions to compare the operands where the function
+// isn't nullopt with the specified comparator at that location.
+XlaComputation CreateScalarComparisonComputation(
+    const std::string& name, const std::vector<PrimitiveType>& operand_types,
+    const std::vector<
+        std::optional<XlaOp (*)(XlaOp, XlaOp, absl::Span<const int64_t>)>>&
+        comparators,
+    XlaBuilder* builder);
+
 }  // namespace xla
 
 #endif  // TENSORFLOW_COMPILER_XLA_CLIENT_LIB_COMPARATORS_H_

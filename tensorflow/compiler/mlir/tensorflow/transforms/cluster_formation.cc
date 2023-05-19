@@ -20,13 +20,13 @@ limitations under the License.
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
-#include "mlir/IR/Attributes.h"  // TF:llvm-project
-#include "mlir/IR/Block.h"  // TF:llvm-project
-#include "mlir/IR/BlockAndValueMapping.h"  // TF:llvm-project
-#include "mlir/IR/Builders.h"  // TF:llvm-project
-#include "mlir/IR/Operation.h"  // TF:llvm-project
-#include "mlir/Pass/Pass.h"  // TF:llvm-project
-#include "mlir/Pass/PassRegistry.h"  // TF:llvm-project
+#include "mlir/IR/Attributes.h"  // from @llvm-project
+#include "mlir/IR/Block.h"  // from @llvm-project
+#include "mlir/IR/BlockAndValueMapping.h"  // from @llvm-project
+#include "mlir/IR/Builders.h"  // from @llvm-project
+#include "mlir/IR/Operation.h"  // from @llvm-project
+#include "mlir/Pass/Pass.h"  // from @llvm-project
+#include "mlir/Pass/PassRegistry.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_device.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_executor.h"
 #include "tensorflow/compiler/mlir/tensorflow/transforms/passes.h"
@@ -37,8 +37,12 @@ namespace TFDevice {
 
 namespace {
 
-struct ClusterFormationPass : public FunctionPass<ClusterFormationPass> {
-  void runOnFunction() override;
+#define GEN_PASS_DEF_CLUSTERFORMATIONPASS
+#include "tensorflow/compiler/mlir/tensorflow/transforms/tf_passes.h.inc"
+
+struct ClusterFormationPass
+    : public impl::ClusterFormationPassBase<ClusterFormationPass> {
+  void runOnOperation() override;
 };
 
 // Cluster structure captures all the operations that are assigned to same
@@ -97,7 +101,7 @@ bool CanMergeIntoCluster(const Cluster& c, Operation* to_merge) {
 
 void ReplaceLiveOutExternalUses(llvm::ArrayRef<Value> live_outs,
                                 tf_device::LaunchOp launch_op) {
-  Region* launch_op_region = &launch_op.body();
+  Region* launch_op_region = &launch_op.getBody();
   for (const auto& p : llvm::zip(live_outs, launch_op.getResults())) {
     Value from = std::get<0>(p);
     // TODO(jingpu): move this to RegionUtils.h in MLIR core.
@@ -141,7 +145,7 @@ void BuildLaunchForCluster(const Cluster& c, OpBuilder* builder) {
   Block* block = &region.front();
   for (Operation* op : c.ops) {
     op->moveBefore(block, block->end());
-    op->removeAttr(builder->getIdentifier("device"));
+    op->removeAttr(builder->getStringAttr("device"));
   }
 
   // Get all escaped live-out values of region, they are used later to determine
@@ -167,7 +171,7 @@ void BuildLaunchForCluster(const Cluster& c, OpBuilder* builder) {
       live_out_types);
 
   // Attach the region to launch_op.
-  launch_op.body().takeBody(region);
+  launch_op.getBody().takeBody(region);
 
   // Replace any external uses of live-out values with return values of launch
   // op. So live-out values no longer escape the region.
@@ -183,7 +187,7 @@ void BuildClusters(Block* block, OpBuilder builder) {
   llvm::MapVector<StringRef, Cluster> nearest_clusters;
   for (Operation& op : llvm::make_early_inc_range(*block)) {
     auto device = GetDevice(&op);
-    if (device == "") continue;
+    if (device.empty()) continue;
 
     // If no cluster of same device has been formed yet, create a new cluster
     // with op alone.
@@ -216,26 +220,24 @@ void BuildClusters(Block* block, OpBuilder builder) {
     BuildLaunchForCluster(device_cluster.second, &builder);
 }
 
-void ClusterFormationPass::runOnFunction() {
-  OpBuilder builder(getFunction().getContext());
+void ClusterFormationPass::runOnOperation() {
+  auto func = getOperation();
+  if (func.isExternal()) return;
+  OpBuilder builder(func.getContext());
 
   // Operates on individual blocks independently of if they are directly in the
   // function body or if they are nested in individual `tf_executor.island`.
-  for (Block& block : getFunction().getBody()) BuildClusters(&block, builder);
-  getFunction().walk([&](tf_executor::IslandOp island) {
+  for (Block& block : func.getBody()) BuildClusters(&block, builder);
+  func.walk([&](tf_executor::IslandOp island) {
     BuildClusters(&island.GetBody(), builder);
   });
 }
 
 }  // namespace
 
-std::unique_ptr<OpPassBase<FuncOp>> CreateClusterFormationPass() {
+std::unique_ptr<OperationPass<func::FuncOp>> CreateClusterFormationPass() {
   return std::make_unique<ClusterFormationPass>();
 }
-
-static PassRegistration<ClusterFormationPass> pass(
-    "tf-device-cluster-formation",
-    "Form clusters from instructions assigned to same device");
 
 }  // namespace TFDevice
 }  // namespace mlir
