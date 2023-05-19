@@ -209,6 +209,12 @@ def if_not_lgpl_restricted(a):
         "//conditions:default": [],
     })
 
+def if_not_mobile_or_arm_or_lgpl_restricted(a):
+    _ = (a,)
+    return select({
+        "//conditions:default": [],
+    })
+
 def if_not_windows(a):
     return select({
         clean_dep("//tensorflow:windows"): [],
@@ -246,9 +252,20 @@ def if_nccl(if_true, if_false = []):
         "//conditions:default": if_true,
     })
 
+def if_portable(if_true, if_false = []):
+    return if_true
+
 def if_api_compatible_defines(if_true, if_false = []):
     return select({
         "//tensorflow:with_api_compatible": if_true,
+        "//conditions:default": if_false,
+    })
+
+def if_indexing_source_code(
+        if_true,  # @unused
+        if_false):
+    """Return a select() on whether or not we are building for source code indexing."""
+    return select({
         "//conditions:default": if_false,
     })
 
@@ -2104,6 +2121,10 @@ register_extension_info(
     label_regex_for_dep = "{extension_name}",
 )
 
+def pytype_library(name, pytype_deps = [], pytype_srcs = [], **kwargs):
+    # Types not enforced in OSS.
+    native.py_library(name = name, **kwargs)
+
 def tf_py_test(
         name,
         srcs,
@@ -2419,6 +2440,29 @@ register_extension_info(
 def tensorflow_opensource_extra_deps():
     return []
 
+# Builds a pybind11 compatible library.
+def pybind_library(
+        name,
+        copts = [],
+        features = [],
+        tags = [],
+        deps = [],
+        **kwargs):
+    # Mark common dependencies as required for build_cleaner.
+    tags = tags + ["req_dep=@pybind11", "req_dep=@local_config_python//:python_headers"]
+
+    native.cc_library(
+        name = name,
+        copts = copts + ["-fexceptions"],
+        features = features + [
+            "-use_header_modules",  # Required for pybind11.
+            "-parse_headers",
+        ],
+        tags = tags,
+        deps = deps + ["@pybind11", "@local_config_python//:python_headers"],
+        **kwargs
+    )
+
 # buildozer: disable=function-docstring-args
 def pybind_extension(
         name,
@@ -2592,6 +2636,15 @@ def if_mlir(if_true, if_false = []):
 def if_mlir_tflite(if_true, if_false = []):
     return if_true  # Internally we always build with MLIR.
 
+def tfcompile_target_cpu():
+    return ""
+
+def tfcompile_dfsan_enabled():
+    return False
+
+def tfcompile_dfsan_abilists():
+    return []
+    
 def tfcompile_extra_flags():
     return ""
 
@@ -2600,3 +2653,30 @@ def tf_grpc_dependency():
 
 def tf_grpc_cc_dependency():
     return "//tensorflow:grpc++"
+
+def tf_grpc_dependencies():
+    return ["//tensorflow:grpc"]
+
+def tf_grpc_cc_dependencies():
+    return ["//tensorflow:grpc++"]
+
+def get_compatible_with_portable():
+    return []
+
+def get_compatible_with_cloud():
+    return []
+
+def filegroup(**kwargs):
+    native.filegroup(**kwargs)
+
+def genrule(**kwargs):
+    native.genrule(**kwargs)
+
+def internal_hlo_deps():
+    return []
+
+def internal_tfrt_deps():
+    return []
+
+def internal_cuda_deps():
+    return []
