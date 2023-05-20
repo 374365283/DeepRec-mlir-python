@@ -84,6 +84,9 @@ tf_extra_repositories()
 load("//third_party/llvm:setup.bzl", "llvm_setup")
 llvm_setup(name = "llvm-project")
 
+load("@com_github_grpc_grpc//bazel:grpc_deps.bzl", "grpc_deps")
+grpc_deps()
+
 # We must check the bazel version before trying to parse any other BUILD
 # files, in case the parsing of those build files depends on the bazel
 # version we require here.
