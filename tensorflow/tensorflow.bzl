@@ -62,6 +62,22 @@ def register_extension_info(**kwargs):
 VERSION = "1.15.5"
 VERSION_MAJOR = VERSION.split(".")[0]
 
+def if_oss(oss_value, google_value = []):
+    """Returns one of the arguments based on the non-configurable build env.
+
+    Specifically, it does not return a `select`, and can be used to e.g.
+    compute elements of list attributes.
+    """
+    return oss_value  # copybara:comment_replace return google_value
+
+def if_google(google_value, oss_value = []):
+    """Returns one of the arguments based on the non-configurable build env.
+
+    Specifically, it does not return a `select`, and can be used to e.g.
+    compute elements of list attributes.
+    """
+    return oss_value  # copybara:comment_replace return google_value
+
 def if_v2(a):
     return select({
         clean_dep("//tensorflow:api_version_2"): a,
@@ -260,6 +276,8 @@ def if_api_compatible_defines(if_true, if_false = []):
         "//tensorflow:with_api_compatible": if_true,
         "//conditions:default": if_false,
     })
+
+ADDITIONAL_API_INDEXABLE_SETTINGS = []
 
 def if_indexing_source_code(
         if_true,  # @unused
