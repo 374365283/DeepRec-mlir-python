@@ -83,6 +83,8 @@ def _proto_gen_impl(ctx):
     for dep in ctx.attr.deps:
         import_flags += dep.proto.import_flags
         deps += dep.proto.deps
+    import_flags = depset(import_flags).to_list()
+    deps = depset(deps).to_list()
 
     args = []
     if ctx.attr.gen_cc:
@@ -91,6 +93,7 @@ def _proto_gen_impl(ctx):
         args += ["--python_out=" + gen_dir]
 
     inputs = srcs + deps
+    tools = [ctx.executable.protoc]
     if ctx.executable.plugin:
         plugin = ctx.executable.plugin
         lang = ctx.attr.plugin_language
@@ -104,7 +107,7 @@ def _proto_gen_impl(ctx):
             outdir = ",".join(ctx.attr.plugin_options) + ":" + outdir
         args += ["--plugin=protoc-gen-%s=%s" % (lang, plugin.path)]
         args += ["--%s_out=%s" % (lang, outdir)]
-        inputs += [plugin]
+        tools.append(plugin)
 
     if args:
         ctx.actions.run(
@@ -113,6 +116,7 @@ def _proto_gen_impl(ctx):
             arguments = args + import_flags + [s.path for s in srcs],
             executable = ctx.executable.protoc,
             mnemonic = "ProtoCompile",
+            tools = tools,
             use_default_shell_env = True,
         )
 
@@ -180,7 +184,7 @@ def cc_proto_library(
         internal_bootstrap_hack = False,
         use_grpc_plugin = False,
         default_runtime = "@com_google_protobuf//:protobuf",
-        **kargs):
+        **kwargs):
     """Bazel rule to create a C++ protobuf library from proto source files
 
     NOTE: the rule is only an internal workaround to generate protos. The
@@ -195,15 +199,15 @@ def cc_proto_library(
           cc_library.
       include: a string indicating the include path of the .proto files.
       protoc: the label of the protocol compiler to generate the sources.
-      internal_bootstrap_hack: a flag indicate the cc_proto_library is used only
-          for bootstraping. When it is set to True, no files will be generated.
+      internal_bootstrap_hack: a flag indicating if the cc_proto_library is used only
+          for bootstrapping. When it is set to True, no files will be generated.
           The rule will simply be a provider for .proto files, so that other
           cc_proto_library can depend on it.
       use_grpc_plugin: a flag to indicate whether to call the grpc C++ plugin
           when processing the proto files.
       default_runtime: the implicitly default runtime which will be depended on by
           the generated cc_library target.
-      **kargs: other keyword arguments that are passed to cc_library.
+      **kwargs: other keyword arguments that are passed to cc_library.
 
     """
 
@@ -226,7 +230,7 @@ def cc_proto_library(
         # An empty cc_library to make rule dependency consistent.
         native.cc_library(
             name = name,
-            **kargs
+            **kwargs
         )
         return
 
@@ -263,7 +267,7 @@ def cc_proto_library(
         deps = cc_libs + deps,
         includes = includes,
         alwayslink = 1,
-        **kargs
+        **kwargs
     )
 
 def internal_gen_well_known_protos_java(srcs):
@@ -331,7 +335,7 @@ def py_proto_library(
         default_runtime = "@com_google_protobuf//:protobuf_python",
         protoc = "@com_google_protobuf//:protoc",
         use_grpc_plugin = False,
-        **kargs):
+        **kwargs):
     """Bazel rule to create a Python protobuf library from proto source files
 
     NOTE: the rule is only an internal workaround to generate protos. The
@@ -352,7 +356,7 @@ def py_proto_library(
       protoc: the label of the protocol compiler to generate the sources.
       use_grpc_plugin: a flag to indicate whether to call the Python C++ plugin
           when processing the proto files.
-      **kargs: other keyword arguments that are passed to cc_library.
+      **kwargs: other keyword arguments that are passed to py_library.
 
     """
     outs = _PyOuts(srcs, use_grpc_plugin)
@@ -389,20 +393,20 @@ def py_proto_library(
         srcs = outs + py_extra_srcs,
         deps = py_libs + deps,
         imports = includes,
-        **kargs
+        **kwargs
     )
 
 def internal_protobuf_py_tests(
         name,
         modules = [],
-        **kargs):
+        **kwargs):
     """Bazel rules to create batch tests for protobuf internal.
 
     Args:
       name: the name of the rule.
       modules: a list of modules for tests. The macro will create a py_test for
           each of the parameter with the source "google/protobuf/%s.py"
-      kargs: extra parameters that will be passed into the py_test.
+      **kwargs: extra parameters that will be passed into the py_test.
 
     """
     for m in modules:
@@ -411,7 +415,7 @@ def internal_protobuf_py_tests(
             name = "py_%s" % m,
             srcs = [s],
             main = s,
-            **kargs
+            **kwargs
         )
 
 def check_protobuf_required_bazel_version():

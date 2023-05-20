@@ -1,12 +1,12 @@
-licenses(["notice"])  # Apache 2.0
+licenses(["notice"])  # BSD 3-clause
 
 filegroup(
     name = "LICENSE",
     visibility = ["//visibility:public"],
 )
 
-cc_library(
-    name = "bigtable_protos",
-    linkopts = ["-lbigtable_protos"],
+py_library(
+    name = "dill",
+    srcs_version = "PY3",
     visibility = ["//visibility:public"],
 )

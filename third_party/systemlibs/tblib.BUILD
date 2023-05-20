@@ -1,7 +1,4 @@
-# Description:
-#   enum34 provides a backport of the enum module for Python 2.
-
-licenses(["notice"])  # MIT
+licenses(["notice"])  # BSD 3-clause
 
 filegroup(
     name = "LICENSE",
@@ -9,6 +6,7 @@ filegroup(
 )
 
 py_library(
-    name = "enum",
+    name = "tblib",
+    srcs_version = "PY3",
     visibility = ["//visibility:public"],
 )
