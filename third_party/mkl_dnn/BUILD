@@ -29,6 +29,24 @@ config_setting(
 )
 
 config_setting(
+    name = "build_with_mkldnn_openmp",
+    define_values = {
+        "build_with_mkl": "true",
+        "build_with_openmp": "true",
+    },
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "build_with_mkl_aarch64_openmp",
+    define_values = {
+        "build_with_mkl_aarch64": "true",
+        "build_with_openmp": "true",
+    },
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
     name = "build_with_mkl_aarch64",
     define_values = {
         "build_with_mkl_aarch64": "true",
