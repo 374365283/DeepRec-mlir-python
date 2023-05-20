@@ -2,6 +2,8 @@
 # TensorFlow is a computational framework, primarily for use in machine
 # learning applications.
 
+load("@bazel_skylib//lib:selects.bzl", "selects")
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "bool_setting")
 load("//tensorflow:tensorflow.bzl", "VERSION")
 load("//tensorflow:tensorflow.bzl", "tf_cc_shared_object")
 load("//tensorflow:tensorflow.bzl", "tf_custom_op_library_additional_deps_impl")
@@ -491,7 +493,48 @@ config_setting(
 # This flag enables experimental MLIR support.
 config_setting(
     name = "with_mlir_support",
-    values = {"define": "with_mlir_support=true"},
+    define_values = {"with_mlir_support": "true"},
+    visibility = ["//visibility:public"],
+)
+
+# This flag forcibly enables experimental MLIR bridge support.
+config_setting(
+    name = "enable_mlir_bridge",
+    define_values = {"enable_mlir_bridge": "true"},
+    visibility = ["//visibility:public"],
+)
+
+# This flag forcibly disables experimental MLIR bridge support.
+config_setting(
+    name = "disable_mlir_bridge",
+    define_values = {"enable_mlir_bridge": "false"},
+    visibility = ["//visibility:public"],
+)
+
+# This flag enables experimental TPU support
+bool_flag(
+    name = "enable_tpu_support",
+    build_setting_default = False,
+)
+
+config_setting(
+    name = "with_tpu_support_define",
+    define_values = {"with_tpu_support": "true"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "with_tpu_support_flag",
+    flag_values = {":enable_tpu_support": "True"},
+    visibility = ["//visibility:public"],
+)
+
+selects.config_setting_group(
+    name = "with_tpu_support",
+    match_any = [
+        ":with_tpu_support_define",
+        ":with_tpu_support_flag",
+    ],
     visibility = ["//visibility:public"],
 )
 

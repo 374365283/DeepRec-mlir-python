@@ -268,6 +268,24 @@ def if_nccl(if_true, if_false = []):
         "//conditions:default": if_true,
     })
 
+def if_libtpu(if_true, if_false = []):
+    """Shorthand for select()ing whether to build backend support for TPUs when building libtpu.so"""
+    return select({
+        # copybara:uncomment_begin(different config setting in OSS)
+        # "//tools/cc_target_os:gce": if_true,
+        # copybara:uncomment_end_and_comment_begin
+        clean_dep("//tensorflow:with_tpu_support"): if_true,
+        # copybara:comment_end
+        "//conditions:default": if_false,
+    })
+
+def if_with_tpu_support(if_true, if_false = []):
+    """Shorthand for select()ing whether to build API support for TPUs when building TensorFlow"""
+    return select({
+        "//tensorflow:with_tpu_support": if_true,
+        "//conditions:default": if_false,
+    })
+
 def if_portable(if_true, if_false = []):
     return if_true
 
