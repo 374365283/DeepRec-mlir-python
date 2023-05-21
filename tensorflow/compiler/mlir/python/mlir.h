@@ -34,7 +34,7 @@ namespace tensorflow {
 std::string ImportGraphDef(const std::string &proto,
                            const std::string &pass_pipeline,
                            bool show_debug_info, TF_Status *status);
-
+/*
 // Simple wrapper to support tf.mlir.experimental.convert_function.
 // Load FunctionDef (binary or textual proto format), convert to MLIR, and
 // (optionally) optimize the module before returning it as a string.
@@ -44,7 +44,7 @@ std::string ImportFunction(const std::string &functiondef_proto,
                            const std::string &pass_pipeline,
                            bool show_debug_info, TFE_Context *context,
                            TF_Status *status);
-
+*/             
 // This wrapper passes the graph_def taking names of input nodes, the shapes and
 // types of its inputs and the output nodes as parameters to MLIR.
 std::string ImportGraphDef(const std::string &proto,

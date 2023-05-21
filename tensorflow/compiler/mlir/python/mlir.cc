@@ -38,7 +38,6 @@ limitations under the License.
 #include "mlir/Pass/Pass.h" // from @llvm-project
 
 #include "tensorflow/c/eager/c_api.h"
-#include "tensorflow/c/eager/tfe_context_internal.h"
 #include "tensorflow/c/tf_status.h"
 #include "tensorflow/c/tf_status_helper.h"
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
@@ -63,16 +62,12 @@ limitations under the License.
 #include "tensorflow/compiler/xla/mlir_hlo/include/mlir-hlo/Dialect/mhlo/transforms/passes.h"
 #include "tensorflow/compiler/xla/mlir_hlo/include/mlir-hlo/Dialect/mhlo/IR/register.h"
 #include "tensorflow/compiler/xla/status_macros.h"
-#include "tensorflow/core/common_runtime/eager/context.h"
-#include "tensorflow/core/common_runtime/function_body.h"
-#include "tensorflow/core/common_runtime/function_def_utils.h"
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/function.pb.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/tensor_shape.pb.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/framework/types.pb.h"
-#include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
@@ -89,7 +84,7 @@ static void RegisterPasses() {
     mlir::lmhlo::registerAllLmhloPasses();
     // These are in compiler/mlir/xla and not part of the above MHLO
     // passes.
-    mlir::mhlo::registerXlaPasses();
+    // mlir::mhlo::registerXlaPasses();
     mlir::mhlo::registerTfXlaPasses();
     mlir::mhlo::registerLegalizeTFPass();
     mlir::mhlo::registerLegalizeTFControlFlowPass();
@@ -158,6 +153,7 @@ static std::string ImportGraphDefImpl(const std::string& proto,
                                  status);
 }
 
+/*
 std::string ImportFunction(const std::string& functiondef_proto,
                            const std::string& pass_pipeline,
                            bool show_debug_info, TFE_Context* tfe_context,
@@ -197,6 +193,7 @@ std::string ImportFunction(const std::string& functiondef_proto,
   return RunPassPipelineOnModule(module->get(), pass_pipeline, show_debug_info,
                                  status);
 }
+*/
 
 std::string ImportGraphDef(const std::string& proto,
                            const std::string& pass_pipeline,

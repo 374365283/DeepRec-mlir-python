@@ -27,7 +27,6 @@ cc_library(
         "//tensorflow/c:tf_status",
         "//tensorflow/c:tf_status_helper",
         "//tensorflow/c/eager:c_api",
-        "//tensorflow/c/eager:tfe_context_internal",
         "//tensorflow/compiler/xla/mlir_hlo:all_passes",
         "//tensorflow/compiler/xla/mlir_hlo:hlo_dialect_registration",
         "//tensorflow/compiler/mlir/lite:tensorflow_lite",
@@ -52,7 +51,6 @@ cc_library(
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core:tflite_portable_logging",
         "//tensorflow/core/common_runtime:core_cpu_base_no_ops",
-        "//tensorflow/core/common_runtime/eager:context",
         # (yongtang) The graph_optimization_pass_registration needs to be part
         # of a shared object that will be loaded whenever `import tensorflow`
         # is run. The natural place is libtensorflow_framework.so.
