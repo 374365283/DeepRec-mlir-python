@@ -25,7 +25,7 @@ import tempfile
 
 import six as _six
 
-from tensorflow.compiler.tf2tensorrt import wrap_py_utils
+from tensorflow.compiler.tf2tensorrt import _pywrap_py_utils
 from tensorflow.core.protobuf import config_pb2
 from tensorflow.core.protobuf import meta_graph_pb2
 from tensorflow.core.protobuf import rewriter_config_pb2
