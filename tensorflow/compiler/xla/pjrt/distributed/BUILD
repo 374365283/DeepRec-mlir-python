@@ -1,7 +1,7 @@
 load("//tensorflow/tsl/platform:rules_cc.bzl", "cc_library")
 load("//tensorflow/tsl/platform:build_config.bzl", "tf_proto_library")
-load("//tensorflow:tensorflow.default.bzl", "tf_grpc_cc_dependencies")
-load("//tensorflow:tensorflow.bzl", "tf_cc_test")
+load("//tensorflow:tensorflow2.default.bzl", "tf_grpc_cc_dependencies")
+load("//tensorflow:tensorflow2.bzl", "tf_cc_test")
 
 licenses(["notice"])
 

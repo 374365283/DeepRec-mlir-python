@@ -3,7 +3,7 @@
 
 load("//tensorflow/tsl/platform:rules_cc.bzl", "cc_library")
 load("//tensorflow/compiler/xla/stream_executor:build_defs.bzl", "stream_executor_friends")
-load("//tensorflow:tensorflow.bzl", "tf_cc_test")
+load("//tensorflow:tensorflow2.bzl", "tf_cc_test")
 
 package(
     default_visibility = [":friends"],

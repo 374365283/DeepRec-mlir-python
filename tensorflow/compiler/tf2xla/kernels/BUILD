@@ -1,12 +1,12 @@
 load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
-load("//tensorflow:tensorflow.default.bzl", "tf_kernel_library")
+load("//tensorflow:tensorflow2.default.bzl", "tf_kernel_library")
 load(
     "//tensorflow/core/platform:build_config.bzl",
     "tf_additional_all_protos",
     "tf_proto_library",
 )
 load(
-    "//tensorflow:tensorflow.bzl",
+    "//tensorflow:tensorflow2.bzl",
     "if_cuda_or_rocm",
     "tf_cuda_library",
 )

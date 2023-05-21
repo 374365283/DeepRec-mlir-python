@@ -1,6 +1,6 @@
 load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 load(
-    "//tensorflow:tensorflow.bzl",
+    "//tensorflow:tensorflow2.bzl",
     "tf_custom_op_library",
     "tf_gen_op_wrapper_py",
 )

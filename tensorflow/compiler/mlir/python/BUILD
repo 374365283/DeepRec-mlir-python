@@ -1,4 +1,4 @@
-load("//tensorflow:tensorflow.default.bzl", "filegroup")
+load("//tensorflow:tensorflow2.default.bzl", "filegroup")
 load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 
 package(

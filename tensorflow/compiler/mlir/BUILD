@@ -1,10 +1,10 @@
 # Description:
 #   TensorFlow/TensorFlow Lite/XLA MLIR dialects and tools.
 
-load("//tensorflow:tensorflow.default.bzl", "filegroup")
+load("//tensorflow:tensorflow2.default.bzl", "filegroup")
 load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 load(
-    "//tensorflow:tensorflow.bzl",
+    "//tensorflow:tensorflow2.bzl",
     "tf_cc_binary",
     "tf_cc_test",
 )

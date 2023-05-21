@@ -1,5 +1,5 @@
-load("//tensorflow:tensorflow.default.bzl", "pybind_extension")
-load("//tensorflow:tensorflow.bzl", "VERSION")
+load("//tensorflow:tensorflow2.default.bzl", "pybind_extension")
+load("//tensorflow:tensorflow2.bzl", "VERSION")
 
 package(
     default_visibility = [

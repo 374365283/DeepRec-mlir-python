@@ -1,6 +1,6 @@
-load("//tensorflow:tensorflow.default.bzl", "get_compatible_with_cloud", "tf_custom_op_py_library", "tf_py_test")
+load("//tensorflow:tensorflow2.default.bzl", "get_compatible_with_cloud", "tf_custom_op_py_library", "tf_py_test")
 load(
-    "//tensorflow:tensorflow.bzl",
+    "//tensorflow:tensorflow2.bzl",
     "tf_cc_test",
     "tf_custom_op_library",
     "tf_gen_op_wrapper_py",

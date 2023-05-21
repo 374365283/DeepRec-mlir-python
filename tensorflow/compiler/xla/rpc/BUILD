@@ -1,7 +1,7 @@
 load("//tensorflow/tsl/platform:rules_cc.bzl", "cc_library")
-load("//tensorflow:tensorflow.default.bzl", "tf_grpc_cc_dependencies")
+load("//tensorflow:tensorflow2.default.bzl", "tf_grpc_cc_dependencies")
 load(
-    "//tensorflow:tensorflow.bzl",
+    "//tensorflow:tensorflow2.bzl",
     "tf_cc_binary",
     "tf_cc_test",
 )

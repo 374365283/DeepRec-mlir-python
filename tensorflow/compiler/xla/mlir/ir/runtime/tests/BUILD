@@ -1,6 +1,6 @@
 load("//tensorflow/compiler/mlir:glob_lit_test.bzl", "glob_lit_tests")
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
-load("//tensorflow:tensorflow.default.bzl", "filegroup", "get_compatible_with_portable")
+load("//tensorflow:tensorflow2.default.bzl", "filegroup", "get_compatible_with_portable")
 
 package(
     default_visibility = [

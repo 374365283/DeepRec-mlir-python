@@ -1,5 +1,5 @@
 load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
-load("//tensorflow:tensorflow.default.bzl", "tf_gen_op_wrapper_cc")
+load("//tensorflow:tensorflow2.default.bzl", "tf_gen_op_wrapper_cc")
 
 package(
     default_visibility = ["//tensorflow/compiler/tf2xla:friends"],

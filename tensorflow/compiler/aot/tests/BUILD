@@ -1,6 +1,6 @@
-load("//tensorflow:tensorflow.default.bzl", "filegroup", "genrule")
+load("//tensorflow:tensorflow2.default.bzl", "filegroup", "genrule")
 load("//tensorflow/compiler/aot:tfcompile.bzl", "tf_library")
-load("//tensorflow:tensorflow.bzl", "tf_cc_test")
+load("//tensorflow:tensorflow2.bzl", "tf_cc_test")
 load("//tensorflow/compiler/mlir:glob_lit_test.bzl", "glob_lit_tests")
 
 package(

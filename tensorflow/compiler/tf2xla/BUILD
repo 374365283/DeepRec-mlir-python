@@ -1,6 +1,6 @@
 load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
-load("//tensorflow:tensorflow.bzl", "if_google", "if_libtpu", "tf_cc_binary", "tf_cc_test", "tf_copts", "tf_cuda_cc_test", "tf_gen_op_wrapper_py", "tf_openmp_copts")
-load("//tensorflow:tensorflow.default.bzl", "cuda_py_test", "filegroup", "get_compatible_with_portable")
+load("//tensorflow:tensorflow2.bzl", "if_google", "if_libtpu", "tf_cc_binary", "tf_cc_test", "tf_copts", "tf_cuda_cc_test", "tf_gen_op_wrapper_py", "tf_openmp_copts")
+load("//tensorflow:tensorflow2.default.bzl", "cuda_py_test", "filegroup", "get_compatible_with_portable")
 
 # copybara:uncomment_begin(google-only)
 # load("//devtools/deps/check:deps_check.bzl", "check_dependencies")

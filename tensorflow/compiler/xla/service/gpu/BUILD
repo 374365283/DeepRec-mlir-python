@@ -11,7 +11,7 @@ load(
     "tf_cuda_tests_tags",
 )
 load(
-    "//tensorflow:tensorflow.bzl",
+    "//tensorflow:tensorflow2.bzl",
     "tf_cc_test",
     "tf_cuda_library",
 )
@@ -28,7 +28,7 @@ load(
     "//tensorflow/tsl/platform/default:cuda_build_defs.bzl",
     "if_cuda_is_configured",
 )
-load("//tensorflow:tensorflow.default.bzl", "filegroup", "get_compatible_with_cloud", "if_nccl")
+load("//tensorflow:tensorflow2.default.bzl", "filegroup", "get_compatible_with_cloud", "if_nccl")
 
 package(
     default_visibility = [":friends"],

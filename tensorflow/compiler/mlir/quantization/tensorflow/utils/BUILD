@@ -1,6 +1,6 @@
 load("@llvm-project//mlir:tblgen.bzl", "td_library")
-load("//tensorflow:tensorflow.default.bzl", "get_compatible_with_cloud")
-load("//tensorflow:tensorflow.bzl", "tf_cc_test")
+load("//tensorflow:tensorflow2.default.bzl", "get_compatible_with_cloud")
+load("//tensorflow:tensorflow2.bzl", "tf_cc_test")
 
 package(
     default_visibility = [

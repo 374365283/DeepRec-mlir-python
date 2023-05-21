@@ -8,9 +8,9 @@ load(
     "//tensorflow/tsl/platform:build_config.bzl",
     "tf_proto_library",
 )
-load("//tensorflow:tensorflow.bzl", "tf_cc_test")
+load("//tensorflow:tensorflow2.bzl", "tf_cc_test")
 load("//tensorflow/tsl:tsl.bzl", "if_libtpu")
-load("//tensorflow:tensorflow.default.bzl", "filegroup", "get_compatible_with_portable", "internal_cuda_deps", "internal_hlo_deps")
+load("//tensorflow:tensorflow2.default.bzl", "filegroup", "get_compatible_with_portable", "internal_cuda_deps", "internal_hlo_deps")
 load(
     "//tensorflow/tsl/platform/default:cuda_build_defs.bzl",
     "if_cuda_is_configured",

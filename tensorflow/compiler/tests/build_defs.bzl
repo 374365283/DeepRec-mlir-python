@@ -1,6 +1,6 @@
 """Build rules for Tensorflow/XLA testing."""
 
-load("//tensorflow:tensorflow.bzl", "py_test")
+load("//tensorflow:tensorflow2.bzl", "py_test")
 load("//tensorflow/compiler/tests:plugin.bzl", "plugins")
 load(
     "//tensorflow/core/platform:default/build_config_root.bzl",

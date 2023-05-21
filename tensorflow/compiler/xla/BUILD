@@ -1,7 +1,7 @@
-load("//tensorflow:tensorflow.default.bzl", "cc_header_only_library")
-load("//tensorflow:tensorflow.default.bzl", "filegroup", "get_compatible_with_portable")
+load("//tensorflow:tensorflow2.default.bzl", "cc_header_only_library")
+load("//tensorflow:tensorflow2.default.bzl", "filegroup", "get_compatible_with_portable")
 load("//tensorflow/tsl/platform:rules_cc.bzl", "cc_library")
-load("//tensorflow:tensorflow.bzl", "tf_cc_test")
+load("//tensorflow:tensorflow2.bzl", "tf_cc_test")
 load(
     "//tensorflow/tsl/platform:build_config.bzl",
     "tf_proto_library",

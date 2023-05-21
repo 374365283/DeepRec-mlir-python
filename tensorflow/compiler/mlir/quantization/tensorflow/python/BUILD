@@ -1,5 +1,5 @@
 load("//tensorflow:pytype.default.bzl", "pytype_library", "pytype_strict_library")
-load("//tensorflow:tensorflow.default.bzl", "get_compatible_with_cloud", "tf_py_test", "tf_python_pybind_extension")
+load("//tensorflow:tensorflow2.default.bzl", "get_compatible_with_cloud", "tf_py_test", "tf_python_pybind_extension")
 load("//tensorflow/core/platform:default/build_config_root.bzl", "if_static")
 
 package(

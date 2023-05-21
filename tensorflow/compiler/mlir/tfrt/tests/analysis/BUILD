@@ -1,5 +1,5 @@
 load("//tensorflow/compiler/mlir:glob_lit_test.bzl", "glob_lit_tests")
-load("//tensorflow:tensorflow.bzl", "if_oss")
+load("//tensorflow:tensorflow2.bzl", "if_oss")
 
 package(licenses = ["notice"])
 

@@ -3,7 +3,7 @@ load(
     "if_gpu_is_configured",
 )
 load(
-    "//tensorflow:tensorflow.bzl",
+    "//tensorflow:tensorflow2.bzl",
     "tf_cc_binary",
 )
 load(

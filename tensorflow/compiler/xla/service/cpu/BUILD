@@ -1,13 +1,13 @@
 # Description:
 #    LLVM-based CPU backend for XLA.
 
-load("//tensorflow:tensorflow.default.bzl", "filegroup", "get_compatible_with_portable")
+load("//tensorflow:tensorflow2.default.bzl", "filegroup", "get_compatible_with_portable")
 load("//tensorflow/compiler/xla:xla.bzl", "ORC_JIT_MEMORY_MAPPER_TARGETS")
 load(
     "//third_party/mkl:build_defs.bzl",
     "mkl_deps",
 )
-load("//tensorflow:tensorflow.bzl", "tf_cc_binary", "tf_cc_test", "tf_openmp_copts")
+load("//tensorflow:tensorflow2.bzl", "tf_cc_binary", "tf_cc_test", "tf_openmp_copts")
 load("//tensorflow/tsl:tsl.bzl", "tf_copts")
 load(
     "//third_party/compute_library:build_defs.bzl",

@@ -15,12 +15,12 @@ tf_library(
 """
 
 load(
-    "//tensorflow:tensorflow.bzl",
+    "//tensorflow:tensorflow2.bzl",
     "if_android",
     "tf_cc_test",
     "tf_copts",
 )
-load("//tensorflow:tensorflow.default.bzl", "tfcompile_dfsan_abilists", "tfcompile_dfsan_enabled", "tfcompile_target_cpu")
+load("//tensorflow:tensorflow2.default.bzl", "tfcompile_dfsan_abilists", "tfcompile_dfsan_enabled", "tfcompile_target_cpu")
 
 def _tfcompile_model_library_rule_impl(ctx):
     header_file = ctx.outputs.header_out

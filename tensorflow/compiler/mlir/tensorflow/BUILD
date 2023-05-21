@@ -1,8 +1,8 @@
-load("//tensorflow:tensorflow.default.bzl", "filegroup", "get_compatible_with_cloud")
+load("//tensorflow:tensorflow2.default.bzl", "filegroup", "get_compatible_with_cloud")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
-load("//tensorflow:tensorflow.bzl", "tf_cc_test", "tf_gen_op_wrapper_py")
+load("//tensorflow:tensorflow2.bzl", "tf_cc_test", "tf_gen_op_wrapper_py")
 
 package(
     default_visibility = ["//visibility:public"],

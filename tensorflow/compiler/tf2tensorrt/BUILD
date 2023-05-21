@@ -5,7 +5,7 @@
 
 load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 load(
-    "//tensorflow:tensorflow.bzl",
+    "//tensorflow:tensorflow2.bzl",
     "VERSION",
     "if_google",
     "tf_copts",
@@ -13,7 +13,7 @@ load(
     "tf_custom_op_library_additional_deps",
     "tf_gen_op_wrapper_py",
 )
-load("//tensorflow:tensorflow.default.bzl", "pybind_extension", "tf_cuda_cc_test", "tf_custom_op_py_library", "tf_gen_op_libs")
+load("//tensorflow:tensorflow2.default.bzl", "pybind_extension", "tf_cuda_cc_test", "tf_custom_op_py_library", "tf_gen_op_libs")
 load(
     "//tensorflow/core/platform:build_config.bzl",
     "tf_additional_all_protos",

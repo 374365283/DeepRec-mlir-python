@@ -2,11 +2,11 @@
 
 load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 load(
-    "//tensorflow:tensorflow.bzl",
+    "//tensorflow:tensorflow2.bzl",
     "tf_custom_op_py_library",
     "tf_gen_op_wrapper_py",
 )
-load("//tensorflow:tensorflow.default.bzl", "tf_gen_op_libs")
+load("//tensorflow:tensorflow2.default.bzl", "tf_gen_op_libs")
 load(
     "//tensorflow/core/platform:build_config.bzl",
     "tf_proto_library",

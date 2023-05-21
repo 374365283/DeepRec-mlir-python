@@ -4,11 +4,11 @@ load(
     "tf_platform_deps",
     "tf_proto_library",
 )
-load("//tensorflow:tensorflow.bzl", "if_google", "tf_cc_binary")
+load("//tensorflow:tensorflow2.bzl", "if_google", "tf_cc_binary")
 load("@tf_runtime//:build_defs.bzl", "tfrt_cc_library", "tfrt_cc_test")
 
 # Note: keep the following lines separate due to the way copybara works
-load("//tensorflow:tensorflow.default.bzl", "get_compatible_with_cloud", "get_compatible_with_portable")
+load("//tensorflow:tensorflow2.default.bzl", "get_compatible_with_cloud", "get_compatible_with_portable")
 
 # TF to TFRT kernels conversion.
 package(

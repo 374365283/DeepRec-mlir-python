@@ -1,6 +1,6 @@
-load("//tensorflow:tensorflow.default.bzl", "get_compatible_with_cloud")
+load("//tensorflow:tensorflow2.default.bzl", "get_compatible_with_cloud")
 load("//tensorflow/tsl/platform:rules_cc.bzl", "cc_library")
-load("//tensorflow:tensorflow.bzl", "if_google")
+load("//tensorflow:tensorflow2.bzl", "if_google")
 
 package(
     default_visibility = [":friends"],

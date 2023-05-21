@@ -1,10 +1,10 @@
 load(
-    "//tensorflow:tensorflow.bzl",
+    "//tensorflow:tensorflow2.bzl",
     "tf_cc_binary",
     "tf_cc_test",
     "tf_py_test",
 )
-load("//tensorflow:tensorflow.default.bzl", "get_compatible_with_cloud", "tf_python_pybind_extension")
+load("//tensorflow:tensorflow2.default.bzl", "get_compatible_with_cloud", "tf_python_pybind_extension")
 load("//tensorflow/compiler/mlir/tfr:build_defs.bzl", "gen_op_libraries")
 load(
     "@llvm-project//mlir:tblgen.bzl",

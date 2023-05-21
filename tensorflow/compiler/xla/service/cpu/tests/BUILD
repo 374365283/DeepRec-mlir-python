@@ -1,8 +1,8 @@
 # Description:
 #    Tests for LLVM-based CPU backend for XLA.
 
-load("//tensorflow:tensorflow.default.bzl", "filegroup")
-load("//tensorflow:tensorflow.bzl", "tf_cc_test")
+load("//tensorflow:tensorflow2.default.bzl", "filegroup")
+load("//tensorflow:tensorflow2.bzl", "tf_cc_test")
 
 package(
     default_visibility = [":friends"],

@@ -7,12 +7,12 @@ load(
 )
 load("//tensorflow/compiler/xla:xla.bzl", "xla_py_test_deps")
 load(
-    "//tensorflow:tensorflow.bzl",
+    "//tensorflow:tensorflow2.bzl",
     "if_cuda_or_rocm",
     "tf_cc_test",
 )
 load("@local_config_cuda//cuda:build_defs.bzl", "if_cuda")
-load("//tensorflow:tensorflow.default.bzl", "pybind_extension")
+load("//tensorflow:tensorflow2.default.bzl", "pybind_extension")
 load("//tensorflow:pytype.default.bzl", "pytype_library")
 
 package(

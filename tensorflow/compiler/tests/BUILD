@@ -1,5 +1,5 @@
 load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
-load("//tensorflow:tensorflow.default.bzl", "cuda_py_test", "tf_cuda_cc_test")
+load("//tensorflow:tensorflow2.default.bzl", "cuda_py_test", "tf_cuda_cc_test")
 load("//tensorflow/compiler/aot:tfcompile.bzl", "tf_library")
 load(
     "//tensorflow/compiler/tests:build_defs.bzl",
