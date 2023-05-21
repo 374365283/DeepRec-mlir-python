@@ -64,7 +64,7 @@ gen_trt_ops = LazyLoader(
 # Register TRT ops in python, so that when users import this module they can
 # execute a TRT-converted graph without calling any of the methods in this
 # module.
-if wrap_py_utils.is_tensorrt_enabled():
+if _pywrap_py_utils.is_tensorrt_enabled():
   if platform.system() == "Windows":
     raise RuntimeError("Windows platform is not supported")
 
@@ -195,8 +195,8 @@ def _check_trt_version_compatibility():
   Raises:
     RuntimeError: if the TensorRT library version is incompatible.
   """
-  compiled_version = wrap_py_utils.get_linked_tensorrt_version()
-  loaded_version = wrap_py_utils.get_loaded_tensorrt_version()
+  compiled_version = _pywrap_py_utils.get_linked_tensorrt_version()
+  loaded_version = _pywrap_py_utils.get_loaded_tensorrt_version()
   tf_logging.info("Linked TensorRT version: %s" % str(compiled_version))
   tf_logging.info("Loaded TensorRT version: %s" % str(loaded_version))
   version_mismatch = False
