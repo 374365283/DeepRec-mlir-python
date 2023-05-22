@@ -39,28 +39,32 @@ limitations under the License.
 
 #include "tensorflow/c/eager/c_api.h"
 #include "tensorflow/c/tf_status.h"
+//#include "tensorflow/c/eager/tfe_context_internal.h"
 #include "tensorflow/c/tf_status_helper.h"
-#include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
+//#include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
 #include "tensorflow/compiler/mlir/tensorflow/dialect_registration.h"
 #include "tensorflow/compiler/mlir/tensorflow/transforms/passes.h"
-#include "tensorflow/compiler/mlir/tensorflow/transforms/tf_saved_model_passes.h"
+//#include "tensorflow/compiler/mlir/tensorflow/transforms/tf_saved_model_passes.h"
 #include "tensorflow/compiler/mlir/tensorflow/translate/import_model.h"
 #include "tensorflow/compiler/mlir/tensorflow/translate/export_graphdef.h"
 #include "tensorflow/compiler/mlir/tensorflow/translate/mlir_roundtrip_flags.h"
-#include "tensorflow/compiler/mlir/tensorflow/translate/tf_mlir_translate.h"
+//#include "tensorflow/compiler/mlir/tensorflow/translate/tf_mlir_translate.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/error_util.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/import_utils.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/compile_mlir_util.h"
 #include "tensorflow/compiler/mlir/tools/kernel_gen/ir/tf_framework_ops.h"
-#include "tensorflow/compiler/mlir/tosa/tf_passes.h"
-#include "tensorflow/compiler/mlir/tosa/tf_tfl_passes.h"
-#include "tensorflow/compiler/mlir/tosa/tfl_passes.h"
-#include "tensorflow/compiler/mlir/tosa/transforms/passes.h"
+//#include "tensorflow/compiler/mlir/tosa/tf_passes.h"
+//#include "tensorflow/compiler/mlir/tosa/tf_tfl_passes.h"
+//#include "tensorflow/compiler/mlir/tosa/tfl_passes.h"
+//#include "tensorflow/compiler/mlir/tosa/transforms/passes.h"
 #include "tensorflow/compiler/mlir/xla/transforms/passes.h"
 #include "tensorflow/compiler/mlir/xla/transforms/xla_passes.h"
-#include "tensorflow/compiler/xla/mlir_hlo/include/mlir-hlo/Dialect/lhlo/transforms/passes.h"
+//#include "tensorflow/compiler/xla/mlir_hlo/include/mlir-hlo/Dialect/lhlo/transforms/passes.h"
 #include "tensorflow/compiler/xla/mlir_hlo/include/mlir-hlo/Dialect/mhlo/transforms/passes.h"
 #include "tensorflow/compiler/xla/mlir_hlo/include/mlir-hlo/Dialect/mhlo/IR/register.h"
+//#include "tensorflow/core/common_runtime/eager/context.h"
+//#include "tensorflow/core/common_runtime/function_body.h"
+//#include "tensorflow/core/common_runtime/function_def_utils.h"
 #include "tensorflow/compiler/xla/status_macros.h"
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/function.pb.h"
@@ -68,6 +72,7 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor_shape.pb.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/framework/types.pb.h"
+//#include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
@@ -79,9 +84,9 @@ static void RegisterPasses() {
   static bool unique_registration = [] {
     mlir::registerAllPasses();
     mlir::registerTensorFlowPasses();
-    mlir::TFDevice::registerTensorFlowDevicePasses();
+    //mlir::TFDevice::registerTensorFlowDevicePasses();
     mlir::mhlo::registerAllMhloPasses();
-    mlir::lmhlo::registerAllLmhloPasses();
+    //mlir::lmhlo::registerAllLmhloPasses();
     // These are in compiler/mlir/xla and not part of the above MHLO
     // passes.
     // mlir::mhlo::registerXlaPasses();
@@ -89,11 +94,11 @@ static void RegisterPasses() {
     mlir::mhlo::registerLegalizeTFPass();
     mlir::mhlo::registerLegalizeTFControlFlowPass();
     mlir::mhlo::registerLegalizeTfTypesPassPass();
-    mlir::tosa::registerLegalizeTosaPasses();
-    mlir::tosa::registerTFtoTOSALegalizationPipeline();
-    mlir::tosa::registerTFLtoTOSALegalizationPipeline();
-    mlir::tosa::registerTFTFLtoTOSALegalizationPipeline();
-    mlir::tf_saved_model::registerTensorFlowSavedModelPasses();
+    //mlir::tosa::registerLegalizeTosaPasses();
+    //mlir::tosa::registerTFtoTOSALegalizationPipeline();
+    //mlir::tosa::registerTFLtoTOSALegalizationPipeline();
+    //mlir::tosa::registerTFTFLtoTOSALegalizationPipeline();
+    //mlir::tf_saved_model::registerTensorFlowSavedModelPasses();
     RegisterCreateMHloOpFusionPipeline();
     RegisterCreateFusedMhloToTFPipeline();
     RegisterCreateTFFunctionalToExecutorPipeline();
@@ -256,6 +261,7 @@ std::string ExportGraphDef(const std::string& mlir_txt, const std::string& pass_
   return ExportGraphDefImpl(mlir_txt, pass_pipeline, show_debug_info, specs, status);
 }
 
+/*
 std::string ExperimentalConvertSavedModelToMlir(
     const std::string& saved_model_path, const std::string& exported_names_str,
     bool show_debug_info, TF_Status* status) {
@@ -283,6 +289,7 @@ std::string ExperimentalConvertSavedModelToMlir(
 
   return MlirModuleToString(*std::move(module_or).value(), show_debug_info);
 }
+
 
 std::string ExperimentalConvertSavedModelV1ToMlirLite(
     const std::string& saved_model_path, const std::string& exported_names_str,
@@ -356,6 +363,7 @@ std::string ExperimentalConvertSavedModelV1ToMlir(
   }
   return MlirModuleToString(*module, show_debug_info);
 }
+*/
 
 std::string ExperimentalRunPassPipeline(const std::string& mlir_txt,
                                         const std::string& pass_pipeline,
