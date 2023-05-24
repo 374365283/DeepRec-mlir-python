@@ -17,9 +17,11 @@ limitations under the License.
 
 #include "tensorflow/core/platform/logging.h"
 
-#if GOOGLE_CUDA && GOOGLE_TENSORRT
+#if GOOGLE_CUDA
+#if GOOGLE_TENSORRT
 #include "third_party/gpus/cuda/include/cuda_runtime_api.h"
-#endif  // GOOGLE_CUDA && GOOGLE_TENSORRT
+#endif  // GOOGLE_TENSORRT
+#endif  // GOOGLE_CUDA
 
 namespace tensorflow {
 namespace tensorrt {
@@ -50,7 +52,8 @@ void* Align(uint64_t alignment, uint64_t size, void*& ptr, uint64_t& space) {
 }  // namespace tensorrt
 }  // namespace tensorflow
 
-#if GOOGLE_CUDA && GOOGLE_TENSORRT
+#if GOOGLE_CUDA
+#if GOOGLE_TENSORRT
 
 namespace tensorflow {
 namespace tensorrt {
@@ -67,20 +70,11 @@ void* TRTDeviceAllocator::allocate(uint64_t size, uint64_t alignment,
   // TODO(aaroey): AllocateRaw takes size_t size as input, so it'll produce
   // unexpected result when TRT tries to allocate more bytes than size_t can
   // carry. Fix this.
-  //
-  // Fail immediately if allocation fails, rather than waiting 10 seconds and
-  // failing then anyway.
-  // TensorRT 7 can also switch to a different algorithm for a layer if an
-  // algorithm uses too much memory. If we don't fail immediately building the
-  // engine can be *very* slow with TensorRT7 when GPU memory is limited.
-  AllocationAttributes attributes;
-  attributes.retry_on_failure = false;
-  void* mem = allocator_->AllocateRaw(alignment, total_size, attributes);
+  void* mem = allocator_->AllocateRaw(alignment, total_size);
   if (!mem) return nullptr;
 
   void* alloc_mem = mem;
   QCHECK(Align(alignment, size, mem, total_size));
-  mutex_lock lock(mu_);
   if (mem != alloc_mem) {
     QCHECK(mem_map_.insert({mem, alloc_mem}).second);
   }
@@ -96,7 +90,6 @@ TRTDeviceAllocator::TRTDeviceAllocator(Allocator* allocator)
 }
 
 void TRTDeviceAllocator::free(void* memory) noexcept {
-  mutex_lock lock(mu_);
   VLOG(2) << "Deallocating @ " << memory;
   // allocated memory adjusted for alignment, restore the original pointer
   if (memory) {
@@ -112,4 +105,5 @@ void TRTDeviceAllocator::free(void* memory) noexcept {
 }  // namespace tensorrt
 }  // namespace tensorflow
 
-#endif  // GOOGLE_CUDA && GOOGLE_TENSORRT
+#endif  // GOOGLE_TENSORRT
+#endif  // GOOGLE_CUDA

@@ -18,7 +18,8 @@ limitations under the License.
 
 #include "tensorflow/core/platform/types.h"
 
-#if GOOGLE_CUDA && GOOGLE_TENSORRT
+#if GOOGLE_CUDA
+#if GOOGLE_TENSORRT
 #include "third_party/tensorrt/NvInfer.h"
 
 namespace tensorflow {
@@ -28,23 +29,17 @@ namespace tensorrt {
 class Logger : public nvinfer1::ILogger {
  public:
   Logger(string name = "DefaultLogger") : name_(name) {}
-  void log(nvinfer1::ILogger::Severity severity,
-           const char* msg) noexcept override;
-  void suppressLoggerMsgs(nvinfer1::ILogger::Severity severity);
-  void unsuppressLoggerMsgs(nvinfer1::ILogger::Severity severity);
-  void unsuppressAllLoggerMsgs() { suppressedMsg_ = 0; }
+  void log(nvinfer1::ILogger::Severity severity, const char* msg) noexcept override;
   static Logger* GetLogger();
 
  private:
-  bool isValidSeverity(nvinfer1::ILogger::Severity severity,
-                       const char* msg = nullptr) noexcept;
-  const string name_;
-  unsigned int suppressedMsg_ = 0;
+  string name_;
 };
 
 }  // namespace tensorrt
 }  // namespace tensorflow
 
-#endif  // GOOGLE_CUDA && GOOGLE_TENSORRT
+#endif  // GOOGLE_TENSORRT
+#endif  // GOOGLE_CUDA
 
 #endif  // TENSORFLOW_COMPILER_TF2TENSORRT_UTILS_TRT_LOGGER_H_
