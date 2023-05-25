@@ -37,7 +37,7 @@ XLA_OPS_DEPS = [
     "//tensorflow/core:framework",
     "//tensorflow/core:lib",
     "//tensorflow/core:state_ops_op_lib",
-    "//tensorflow/core/platform:stream_executor_no_cuda",
+    "//tensorflow/core:stream_executor_no_cuda",
     "//tensorflow/core/profiler/lib:traceme",
     "//tensorflow/compiler/xla/stream_executor:tf_allocator_adapter",
     "@com_google_absl//absl/types:optional",

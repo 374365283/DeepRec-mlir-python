@@ -264,7 +264,7 @@ XLA_DEVICE_DEPS = [
     "//tensorflow/core:resource_variable_ops_op_lib",
     "//tensorflow/core:sendrecv_ops_op_lib",
     "//tensorflow/core:state_ops_op_lib",
-    "//tensorflow/core/platform:stream_executor_no_cuda",
+    "//tensorflow/core:stream_executor_no_cuda",
     "//tensorflow/core/kernels:constant_op",
     "//tensorflow/core/kernels:fifo_queue",
     "//tensorflow/core/kernels:function_ops",
